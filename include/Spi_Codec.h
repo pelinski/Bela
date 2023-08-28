@@ -45,7 +45,7 @@ public:
 	unsigned char readRegister(unsigned char reg, CODEC_TYPE codec = MASTER_CODEC);
 
 	int initCodec();
-	int startAudio(int dummy_parameter = 0);
+	int startAudio(int shouldBeReady);
 	int stopAudio();
 	unsigned int getNumIns();
 	unsigned int getNumOuts();
@@ -54,8 +54,7 @@ public:
 	int reset(); // Hard reset of codec(s)
 	bool masterIsDetected(); // CTAG face2|4
 	bool slaveIsDetected();  // CTAG Beast
-	int setDacVolume(int channel, float gain);
-	int setAdcVolume(int channel, float gain) { return 0; };
+	int setLineOutVolume(int channel, float gain);
 	int setHpVolume(int channel, float gain) { return 0; };
 	int setInputGain(int channel, float newGain) { return 0; };
 	int disable() {return 0;};
@@ -69,6 +68,7 @@ private:
 	McaspConfig mcaspConfig;
 	bool _isBeast = false;
 	bool _verbose;
+	bool _shouldPinmux;
 };
 
 #endif /* SPI_CODEC_H_ */

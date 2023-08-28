@@ -1,6 +1,6 @@
 #include "Gui.h"
-#include <memory> // for shared pointers
 #include <iostream>
+#include <libraries/WSServer/WSServer.h>
 
 Gui::Gui()
 {
@@ -20,27 +20,27 @@ int Gui::setup(unsigned int port, std::string address)
 	ws_server = std::unique_ptr<WSServer>(new WSServer());
 	ws_server->setup(port);
 	ws_server->addAddress(_addressData,
-		[this](std::string address, void* buf, int size)
+		[this](const std::string& address, const WSServerDetails* id, const unsigned char* buf, size_t size)
 		{
-			ws_onData((const char*) buf, size);
+			ws_onData(address, id, buf, size);
 		},
 	 nullptr, nullptr, true);
 
 	ws_server->addAddress(_addressControl,
 		// onData()
-		[this](std::string address, void* buf, int size)
+		[this](const std::string& address, const WSServerDetails* id,  const unsigned char* buf, size_t size)
 		{
-			ws_onControlData((const char*) buf, size);
+			ws_onControlData(address, id, buf, size);
 		},
 		// onConnect()
-		[this](std::string address)
+		[this](const std::string& address, const WSServerDetails* id)
 		{
-			ws_connect();
+			ws_connect(address, id);
 		},
 		// onDisconnect()
-		[this](std::string address)
+		[this](const std::string& address, const WSServerDetails* id)
 		{
-			ws_disconnect();
+			ws_disconnect(address, id);
 		}
 	);
 	return 0;
@@ -56,20 +56,18 @@ int Gui::setup(std::string projectName, unsigned int port, std::string address)
  * Called when websocket is connected.
  * Communication is started here with the server sending a 'connection' JSON object
  * with initial settings.
- * The client replies with 'connection-ack', which should be parsed accordingly.
+ * The client replies with 'connection-reply', which should be parsed accordingly.
  */
-void Gui::ws_connect()
+void Gui::ws_connect(const std::string& address, const WSServerDetails* id)
 {
+	// TODO: this is currently sent to all clients, but it should only be sent to the new one
 	// send connection JSON
 	JSONObject root;
 	root[L"event"] = new JSONValue(L"connection");
 	if(!_projectName.empty())
 		root[L"projectName"] = new JSONValue(_projectName);
-
-	// Parse whatever needs to be parsed on connection
-
 	JSONValue *value = new JSONValue(root);
-	sendControl(value);
+	sendControl(value, WSServer::kThreadCallback);
 	delete value;
 }
 
@@ -77,26 +75,27 @@ void Gui::ws_connect()
  * Called when websocket is disconnected.
  *
  */
-void Gui::ws_disconnect()
+void Gui::ws_disconnect(const std::string& address, const WSServerDetails* id)
 {
-	wsIsConnected = false;
+	if(wsConnections.count(id))
+		wsConnections.erase(id);
 }
 
 /*
- *  on_data callback for scope_control websocket
+ *  on_data callback for gui_control websocket
  *  runs on the (linux priority) seasocks thread
  */
-void Gui::ws_onControlData(const char* data, unsigned int size)
+void Gui::ws_onControlData(const std::string& address, const WSServerDetails* id, const unsigned char* data, unsigned int size)
 {
 	// parse the data into a JSONValue
-	JSONValue *value = JSON::Parse(data);
+	JSONValue *value = JSON::Parse((const char*)data);
 	if (value == NULL || !value->IsObject()){
 		fprintf(stderr, "Could not parse JSON:\n%s\n", data);
 		return;
 	}
 	// look for the "event" key
 	JSONObject root = value->AsObject();
-	if(customOnControlData && !customOnControlData(root, userControlData))
+	if(customOnControlData && !customOnControlData(root, controlCallbackArg))
 	{
 		delete value;
 		return;
@@ -104,16 +103,17 @@ void Gui::ws_onControlData(const char* data, unsigned int size)
 	if (root.find(L"event") != root.end() && root[L"event"]->IsString()){
 		std::wstring event = root[L"event"]->AsString();
 		if (event.compare(L"connection-reply") == 0){
-			wsIsConnected = true;
+			if(!wsConnections.count(id))
+				wsConnections.insert(id);
 		}
 	}
 	delete value;
 	return;
 }
 
-void Gui::ws_onData(const char* data, unsigned int size)
+void Gui::ws_onData(const std::string& address, const WSServerDetails* id, const unsigned char* data, size_t size)
 {
-	if(customOnData && !customOnData(data, size, userBinaryData))
+	if(customOnData && !customOnData(address, id, data, size, binaryCallbackArg))
 	{
 		return;
 	}
@@ -170,15 +170,18 @@ DataBuffer& Gui::getDataBuffer( unsigned int bufferId )
 Gui::~Gui()
 {
 	cleanup();
+	// trigger the destruction of the server so that ws_disconnect is called
+	// while the object is still valid
+	ws_server.reset();
 }
 void Gui::cleanup()
 {
 }
 
-int Gui::sendControl(JSONValue* root) {
+int Gui::sendControl(const JSONValue* root, WSServer::CallingThread callingThread) {
     std::wstring wide = JSON::Stringify(root);
     std::string str(wide.begin(), wide.end());
-    return ws_server->sendNonRt(_addressControl.c_str(), str.c_str());
+    return ws_server->sendNonRt(_addressControl.c_str(), str.c_str(), callingThread);
 }
 
 int Gui::doSendBuffer(const char* type, unsigned int bufferId, const void* data, size_t size)

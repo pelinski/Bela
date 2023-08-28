@@ -452,19 +452,19 @@
     {
       "elemclass": "dPin",
       "x": "40",
-      "y": "174",
+      "y": "195",
       "width": "13",
       "height": "13",
-      "text": "Digital 10 (Pd: 27)",
+      "text": "Digital 10 (Pd: 27)<br>Note: silkscreen is wrong on rev.A2",
       "tip": "tooltip"
     },
     {
       "elemclass": "dPin",
       "x": "40",
-      "y": "154",
+      "y": "174",
       "width": "13",
       "height": "13",
-      "text": "Digital 11 (Pd: 28)",
+      "text": "Digital 11 (Pd: 28)<br>Note: silkscreen is wrong on rev.A2",
       "tip": "tooltip"
     },
     {

@@ -10,11 +10,15 @@ namespace StringUtils
 	/**
 	 * Split a string at a given separator.
 	 */
-	std::vector<std::string> split(const std::string& s, char delimiter, bool removeEmpty = false);
+	std::vector<std::string> split(const std::string& s, char delimiter, bool removeEmpty = false, unsigned int limit = 0);
 	/**
 	 * Remove leading and trailing spaces from a string.
 	 */
 	std::string trim(std::string const& str);
+	/**
+	 * Parses a string as a decimal or hex integer
+	 */
+	long long int parseAsInt(std::string const& str);
 	/**
 	 * Turns a vector of strings into a vector of `char*`, useful for
 	 * generating `argv`, with the first element being a `nullptr`.
@@ -40,6 +44,10 @@ namespace IoUtils
 		APPEND, ///< When opening a file for writing, append to the existing content of the file.
 		TRUNCATE, ///<When opening a file for writing, truncate the existing content of the file.
 	} Mode;
+	/**
+	 * Check if path exists.
+	 */
+	bool pathExists(const std::string& path);
 	/**
 	 * Open a file for output.
 	 */
@@ -84,4 +92,23 @@ namespace ConfigFileUtils {
 	 * @return 0 on success, or an error code otherwise.
 	 */
 	int writeValue(const std::string& file, const std::string& key, const std::string& value, IoUtils::Mode mode = IoUtils::TRUNCATE);
+}
+
+/**
+ * Utilities to manipulate pinmux via bone-pinmux-helper
+ */
+namespace PinmuxUtils
+{
+	/**
+	 * Check whether the current state of @param pin matches @param desiredState.
+	 */
+	bool check(const std::string& pin, const std::string& desiredState);
+	/**
+	 * Check the current state of @param pin
+	 */
+	std::string get(const std::string& pin);
+	/**
+	 * Set the state of @param pin
+	 */
+	void set(const std::string& pin, const std::string& desiredState);
 }

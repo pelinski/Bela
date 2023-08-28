@@ -17,6 +17,7 @@
 ## AT=                  -- used instead of @ to silence the output. Defaults AT=@, use AT= for a very verbose output
 ## DISTCC=              -- specify whether to use distcc (1) or not (0, default)
 ## RELINK=              -- specify whether to force re-linking the project file (1) or not (0, default). Set it to 1 when developing a library.
+## SHARED=              -- specify whether to build the project-specific files as a shared library and link the executable to it and libbela (1) or not (0, default).
 ###
 ##available targets: #
 -include CustomMakefileTop.in
@@ -25,6 +26,10 @@
 DISTCC ?= 0 # set this to 1 to use distcc by default
 
 # an empty recipe to avoid implicit rules for .d files
+# These get generated as side effects of .c, .cpp and .S compilations, but we
+# do not want make to be aware of that, or it will try to rebuild them before all
+# operations that don't actually need to build them, e.g.: clean or when
+# EXAMPLE= is set
 %.d:
 	
 AT?=@
@@ -84,6 +89,7 @@ COMMAND_LINE_OPTIONS?=$(CL)
 ifeq ($(RUN_WITH_PRU_BIN),true)
 # Only use this one for development. You may have to run it without this option at least once, to generate 
 # include/pru_rtaudio_bin.h
+# You also have to remove build/core/PruBinary.d so that we can hide the dependency on the *_bin.h files.
 ifndef PROJECT
 $(warning PROJECT is not defined, so RUN_WITH_PRU_BIN will be ignored)
 endif # ifndef PROJECT
@@ -99,7 +105,7 @@ endif #ifeq($(RUN_WITH_PRU_BIN),true)
 ifdef PROJECT
 
 #check if project dir exists
-CHECK_PROJECT_DIR_EXIST=$(shell stat $(PROJECT_DIR))
+CHECK_PROJECT_DIR_EXIST:=$(shell stat $(PROJECT_DIR))
 ifeq ($(CHECK_PROJECT_DIR_EXIST),)
 $(error $(PROJECT_DIR) does not exist)
 endif
@@ -140,7 +146,11 @@ SHOULD_BUILD=false
 RUN_PREREQUISITES+=lib/libbela.so lib/libbelaextra.so
 else
 ifeq ($(filter $(LIBPD_FILE),$(FILE_LIST)),$(LIBPD_FILE))
+ifeq (,$(strip $(filter %.c,$(FILE_LIST)) $(filter %.cc,$(FILE_LIST)) $(filter %.cpp,$(FILE_LIST))))
 PROJECT_TYPE=libpd
+else
+PROJECT_TYPE=cpp
+endif
 else
 ifeq ($(filter $(CSOUND_FILE),$(FILE_LIST)),$(CSOUND_FILE))
 PROJECT_TYPE=cs
@@ -221,7 +231,7 @@ SED_REMOVE_WRAPPERS_REGEX=sed "s/-Wl,@[A-Za-z_/]*.wrappers\>//g"
 ifeq ($(XENOMAI_VERSION),2.6)
   DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags | $(SED_REMOVE_WRAPPERS_REGEX))
 else
-  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags --no-auto-init | $(SED_REMOVE_WRAPPERS_REGEX))
+  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags --no-auto-init | $(SED_REMOVE_WRAPPERS_REGEX) | sed s/-Wl,--no-as-needed//)
 endif
 DEFAULT_XENOMAI_LDFLAGS := $(filter-out -no-pie, $(DEFAULT_XENOMAI_LDFLAGS))
 DEFAULT_XENOMAI_LDFLAGS := $(filter-out -fno-pie, $(DEFAULT_XENOMAI_LDFLAGS))
@@ -242,7 +252,6 @@ LIBPD_LIBS=-lpd -lpthread_rt
 endif
 ifeq ($(XENOMAI_VERSION),3)
 XENOMAI_STAT_PATH=/proc/xenomai/sched/stat
-LIBPD_LIBS=-lpd -lpthread
 endif
 
 # This is used to run Bela projects from the terminal in the background
@@ -296,27 +305,31 @@ ifeq ($(XENOMAI_VERSION),3)
   BELA_USE_DEFINE?=BELA_USE_RTDM
 endif
 
-DEFAULT_COMMON_FLAGS := $(DEFAULT_XENOMAI_CFLAGS) -O3 -g -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -ftree-vectorize -ffast-math -DNDEBUG -D$(BELA_USE_DEFINE) -I$(BASE_DIR)/resources/$(DEBIAN_VERSION)/include -save-temps=obj -DENABLE_PRU_UIO=1
+ARCH_FLAGS?=-march=armv7-a -mtune=cortex-a8 -mfpu=neon -mfloat-abi=hard
+
+DEFAULT_COMMON_FLAGS := $(DEFAULT_XENOMAI_CFLAGS) -O3 -g $(ARCH_FLAGS) -ftree-vectorize -ffast-math -DNDEBUG -D$(BELA_USE_DEFINE) -I$(BASE_DIR)/resources/$(DEBIAN_VERSION)/include -DENABLE_PRU_UIO=1
+ifeq ($(SHARED),1)
+DEFAULT_COMMON_FLAGS+= -fPIC
+PROJ_INFIX=.fpic
+else
+PROJ_INFIX=
+endif # SHARED
 DEFAULT_CPPFLAGS := $(DEFAULT_COMMON_FLAGS) -std=c++11
 DEFAULT_CFLAGS := $(DEFAULT_COMMON_FLAGS) -std=gnu11
-BELA_LDFLAGS = -Llib/
+BELA_LDFLAGS = -Llib/ -Wl,--as-needed
 BELA_CORE_LDLIBS = $(DEFAULT_XENOMAI_LDFLAGS) -lprussdrv -lstdc++ # libraries needed by core code (libbela.so)
-BELA_EXTRA_LDLIBS =$(DEFAULT_XENOMAI_LDFLAGS) -lasound -lseasocks -lNE10 # additional libraries needed by extra code (libbelaextra.so)
-BELA_LDLIBS = $(BELA_CORE_LDLIBS) $(BELA_EXTRA_LDLIBS)
+BELA_EXTRA_LDLIBS = -lasound -lseasocks -lNE10 # additional libraries needed by extra code (libbelaextra.so), taken from the dependencies of the libraries of the objects included in $(LIB_EXTRA_OBJS)
+BELA_LDLIBS := $(BELA_CORE_LDLIBS)
+BELA_LDLIBS := $(filter-out -lstdc++,$(BELA_LDLIBS))
 ifeq ($(PROJECT_TYPE),libpd)
-BELA_LDLIBS += $(LIBPD_LIBS)
 # Objects for a system-supplied default render() file for libpd projects,
 # if the user only wants to provide the Pd files.
 DEFAULT_PD_CPP_SRCS := ./core/default_libpd_render.cpp
 DEFAULT_PD_OBJS := $(addprefix build/core/,$(notdir $(DEFAULT_PD_CPP_SRCS:.cpp=.o)))
 ALL_DEPS += $(addprefix build/core/,$(notdir $(DEFAULT_PD_CPP_SRCS:.cpp=.d)))
 
-# TODO: replace the below with proper parsing of default_libpd_render.ii
-include libraries/Midi/build/Makefile.link
-include libraries/Scope/build/Makefile.link
-include libraries/Gui/build/Makefile.link
-include libraries/Trill/build/Makefile.link
-include libraries/Pipe/build/Makefile.link
+DEFAULT_PD_CPP_DEPS := $(DEFAULT_PD_OBJS:.o=.d)
+LIBPD_DETECT_LIBRARES_FLAGS := $(foreach file,$(DEFAULT_PD_CPP_DEPS),-f $(file))
 endif
 
 ifndef COMPILER
@@ -365,18 +378,18 @@ ifneq ($(PROJECT),)
 find_files = $(if $(if $(PROJECT_DIR),$(if $(1),_)), $(shell find $(PROJECT_DIR)/ -type f -name "$(1)" | grep -v "$(PROJECT_DIR)/heavy/.*\.cpp"))
 
 ASM_SRCS := $(call find_files,*.S)
-ASM_OBJS := $(addprefix $(PROJECT_DIR)/build/,$(notdir $(ASM_SRCS:.S=.o)))
-ALL_DEPS += $(addprefix $(PROJECT_DIR)/build/,$(notdir $(ASM_SRCS:.S=.d)))
+ASM_OBJS := $(addprefix $(PROJECT_DIR)/build/,$(notdir $(ASM_SRCS:.S=$(PROJ_INFIX).o)))
+ALL_DEPS += $(addprefix $(PROJECT_DIR)/build/,$(notdir $(ASM_SRCS:.S=$(PROJ_INFIX).d)))
 
 P_SRCS := $(call find_files,*.p)
 P_OBJS := $(addprefix $(PROJECT_DIR)/,$(notdir $(P_SRCS:.p=_bin.h)))
 
 C_SRCS := $(call find_files,*.c)
-C_OBJS := $(subst $(PROJECT_DIR),$(PROJECT_DIR)/build,$(C_SRCS:.c=.o))
-ALL_DEPS += $(addprefix $(PROJECT_DIR)/build/,$(notdir $(C_SRCS:.c=.d)))
+C_OBJS := $(subst $(PROJECT_DIR),$(PROJECT_DIR)/build,$(C_SRCS:.c=$(PROJ_INFIX).o))
+ALL_DEPS += $(addprefix $(PROJECT_DIR)/build/,$(notdir $(C_SRCS:.c=$(PROJ_INFIX).d)))
 
 CPP_SRCS := $(call find_files,*.cpp)
-CPP_OBJS := $(subst $(PROJECT_DIR),$(PROJECT_DIR)/build,$(CPP_SRCS:.cpp=.o))
+CPP_OBJS := $(subst $(PROJECT_DIR),$(PROJECT_DIR)/build,$(CPP_SRCS:.cpp=$(PROJ_INFIX).o))
 
 BUILD_DIRS += $(dir $(C_OBJS))
 BUILD_DIRS += $(dir $(CPP_OBJS))
@@ -388,7 +401,8 @@ endif # $(PROJECT)
 #below.
 $(shell mkdir -p  $(BUILD_DIRS) lib)
 
-PROJECT_OBJS := $(P_OBJS) $(ASM_OBJS) $(C_OBJS) $(CPP_OBJS)
+PROJECT_OBJS_NO_P := $(ASM_OBJS) $(C_OBJS) $(CPP_OBJS)
+PROJECT_OBJS := $(P_OBJS) $(PROJECT_OBJS_NO_P)
 
 # Core Bela sources
 CORE_C_SRCS = $(wildcard core/*.c)
@@ -397,22 +411,31 @@ ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_C_SRCS:.c=.d)))
 
 CORE_CPP_SRCS = $(filter-out core/default_main.cpp core/default_libpd_render.cpp, $(wildcard core/*.cpp))
 CORE_OBJS := $(CORE_OBJS) $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.o)))
-CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/I2c_MultiTLVCodec.o build/core/I2c_MultiTdmCodec.o build/core/Spi_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o build/core/PruBinary.o build/core/board_detect.o build/core/DataFifo.o build/core/BelaContextFifo.o build/core/BelaContextSplitter.o build/core/MiscUtilities.o build/core/Mmap.o build/core/Mcasp.o build/core/PruManager.o
-EXTRA_CORE_OBJS := $(filter-out $(CORE_CORE_OBJS), $(CORE_OBJS))
 ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.d)))
 
 CORE_ASM_SRCS := $(wildcard core/*.S)
 CORE_ASM_OBJS := $(addprefix build/core/,$(notdir $(CORE_ASM_SRCS:.S=.o)))
 ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_ASM_SRCS:.S=.d)))
 
+CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/I2c_MultiTLVCodec.o build/core/I2c_MultiI2sCodec.o build/core/I2c_MultiTdmCodec.o build/core/Spi_Codec.o build/core/Es9080_Codec.o build/core/Tlv320_Es9080_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o build/core/PruBinary.o build/core/board_detect.o build/core/DataFifo.o build/core/BelaContextFifo.o build/core/BelaContextSplitter.o build/core/MiscUtilities.o build/core/Mmap.o build/core/Mcasp.o build/core/PruManager.o build/core/FormatConvert.o
+EXTRA_CORE_OBJS := $(filter-out $(CORE_CORE_OBJS), $(CORE_OBJS)) $(filter-out $(CORE_CORE_OBJS),$(CORE_ASM_OBJS))
 # Objects for a system-supplied default main() file, if the user
 # only wants to provide the render functions.
 DEFAULT_MAIN_CPP_SRCS := ./core/default_main.cpp
-DEFAULT_MAIN_OBJS := ./build/core/default_main.o
+DEFAULT_MAIN_OBJS := build/core/default_main.o
 ALL_DEPS += ./build/core/default_main.d
 
+DEFAULT_ALL_OBJS:=$(DEFAULT_MAIN_OBJS) $(DEFAULT_PD_OBJS)
+ifeq ($(SHARED),1)
+LIB_PROJECT_SO:=lib$(PROJECT).so
+LIB_PROJECT_SO_FULL:=$(PROJECT_DIR)/$(LIB_PROJECT_SO)
+ALL_OBJS=$(LIB_PROJECT_SO_FULL) lib/$(LIB_EXTRA_SO) lib/$(LIB_SO) $(DEFAULT_ALL_OBJS)
+BELA_LDFLAGS+=-Wl,-rpath,$(PROJECT_DIR)
+else # SHARED
+ALL_OBJS=$(CORE_ASM_OBJS) $(CORE_OBJS) $(PROJECT_OBJS) $(DEFAULT_ALL_OBJS)
+endif # SHARED
+
 # include all dependencies - necessary to force recompilation when a header is changed
-# (had to remove -MT"$(@:%.o=%.d)" from compiler call for this to work)
 -include $(ALL_DEPS)
 -include libraries/*/build/*.d # dependencies for each of the libraries' object files
 
@@ -443,7 +466,7 @@ endif
 build/core/%.o: ./core/%.c
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: C Compiler $(CC)'
-	$(AT) $(CC) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CFLAGS)  -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CFLAGS) -fPIC -Wno-unused-function
+	$(AT) $(CC) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CFLAGS)  -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CFLAGS) -fPIC -Wno-unused-function
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
@@ -451,7 +474,7 @@ build/core/%.o: ./core/%.c
 build/core/%.o: ./core/%.cpp
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: C++ Compiler $(CXX)'
-	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS) -fPIC -Wno-unused-function -Wno-unused-const-variable
+	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS) -fPIC -Wno-unused-function -Wno-unused-const-variable
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
@@ -460,12 +483,12 @@ build/core/%.o: ./core/%.S
 ifeq (,$(SYNTAX_FLAG))
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: GCC Assembler'
-	$(AT) as -o "$@" "$<"
+	$(AT) gcc -c -o "$@" "$<" -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)"
 	$(AT) echo ' ...done'
 endif
 	$(AT) echo ' '
 
-%.bin: pru/%.p
+%.bin: pru/%.p include/PruArmCommon.h
 ifeq (,$(SYNTAX_FLAG))
 	$(AT) echo 'Building $<...'
 	$(AT) pasm -V2 -L -c -b "$<" > /dev/null
@@ -473,7 +496,7 @@ ifeq (,$(SYNTAX_FLAG))
 endif
 	$(AT) echo ' '
 
-build/pru/%_bin.h: pru/%.p
+build/pru/%_bin.h: pru/%.p include/PruArmCommon.h
 ifeq (,$(SYNTAX_FLAG))
 	$(AT) echo 'Building $<...'
 	$(AT) pasm -V2 -L -c "$<" > /dev/null
@@ -482,41 +505,28 @@ ifeq (,$(SYNTAX_FLAG))
 endif
 	$(AT) echo ' '
 
-# distcc does not actually store the temp files with -save-temps, so we have to generate them manually.
-ifeq ($(DISTCC),1)
-ifeq ($(SYNTAX_FLAG),)
-GENERATE_PREPROCESSED := 1
-endif
-endif
-
 # Rule for user-supplied C++ files
-$(PROJECT_DIR)/build/%.o: $(PROJECT_DIR)/%.cpp
+$(PROJECT_DIR)/build/%$(PROJ_INFIX).o: $(PROJECT_DIR)/%.cpp
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: C++ Compiler $(CXX)'
-	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS)
-ifeq ($(GENERATE_PREPROCESSED),1)
-	$(AT) $(CXX) $(INCLUDES) $(DEFAULT_CPPFLAGS) -w -E -o "$(@:%.o=%.ii)" "$<" $(CPPFLAGS)
-endif
+	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS)
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
 # Rule for user-supplied C files
-$(PROJECT_DIR)/build/%.o: $(PROJECT_DIR)/%.c
+$(PROJECT_DIR)/build/%$(PROJ_INFIX).o: $(PROJECT_DIR)/%.c
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: C Compiler $(CC)'
-	$(AT) $(CC) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CFLAGS)
-ifeq ($(GENERATE_PREPROCESSED),1)
-	$(AT) $(CC) $(INCLUDES) $(DEFAULT_CFLAGS) -w -E -o "$(@:%.o=%.i)" "$<" $(CFLAGS)
-endif
+	$(AT) $(CC) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CFLAGS)
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
 # Rule for user-supplied assembly files
-$(PROJECT_DIR)/build/%.o: $(PROJECT_DIR)/%.S
+$(PROJECT_DIR)/build/%$(PROJ_INFIX).o: $(PROJECT_DIR)/%.S
 ifeq (,$(SYNTAX_FLAG))
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: GCC Assembler'
-	$(AT) as -o "$@" "$<"
+	$(AT) gcc -c -o "$@" "$<" -MMD -MP -MT"$@" -MF"$(@:%.o=%.d)"
 	$(AT) echo ' ...done'
 endif
 	$(AT) echo ' '
@@ -541,19 +551,15 @@ ifeq ($(SHOULD_BUILD),false)
 $(OUTPUT_FILE):
 else
 
-ALL_OBJS := $(CORE_ASM_OBJS) $(CORE_OBJS) $(PROJECT_OBJS) $(DEFAULT_MAIN_OBJS) $(DEFAULT_PD_OBJS)
 .EXPORT_ALL_VARIABLES:
 
-PROJECT_PREPROCESSED_FILES := $(C_OBJS:%.o=%.i) $(CPP_OBJS:%.o=%.ii)
 PROJECT_LIBRARIES_MAKEFILE := $(PROJECT_DIR)/build/Makefile.inc
 
-#these rules do nothing, but keep make happy in case there is no .ii/.i file
-#(e.g.: when updating from a codebase that did not save preprocessed files)
-$(PROJECT_DIR)/build/%.i: $(PROJECT_DIR)/build/%.o ;
-$(PROJECT_DIR)/build/%.ii: $(PROJECT_DIR)/build/%.o ;
-
-$(PROJECT_LIBRARIES_MAKEFILE): $(PROJECT_PREPROCESSED_FILES)
-	$(AT)./resources/tools/detectlibraries.sh --project $(PROJECT)
+# the actual dependency is on the .d files, but as we have no rule for making
+# those .d files (and we don't want one, see above) and they are made as a side
+# effect of the .o, we depend here on the .o instead of the .d
+$(PROJECT_LIBRARIES_MAKEFILE): $(PROJECT_OBJS_NO_P) $(DEFAULT_PD_OBJS)
+	$(AT)./resources/tools/detectlibraries.sh --path $(PROJECT_DIR)/build $(LIBPD_DETECT_LIBRARES_FLAGS)
 
 ifeq ($(RELINK),1)
   ifeq (,$(filter runide runonly,$(MAKECMDGOALS)))
@@ -577,9 +583,7 @@ clean: ## Same as projectclean
 clean: projectclean
 
 coreclean: ## Remove the core's build objects
-	-$(RM) build/core/*
-	-$(RM) build/pru/*
-	-$(RM) include/pru_rtaudio_bin.h
+	-$(RM) build/*
 
 prompt:
 	$(AT) printf "Warning: you are about to DELETE the projects/ folder and its content. This operation cannot be undone. Continue? (y/N) "
@@ -592,14 +596,17 @@ distcleannoprompt: ## Same as distclean, but does not prompt for confirmation. U
 	-$(RM) build/source/* $(CORE_OBJS) $(CORE_CPP_DEPS) $(DEFAULT_MAIN_OBJS) $(DEFAULT_MAIN_CPP_DEPS) $(OUTPUT_FILE)
 	-@echo ' '
 
-runonly: ## Run PROJECT in the foreground
+RUNONLY_COMMAND:=$(AT) sync& cd $(RUN_FROM) && $(RUN_COMMAND)
+runonly: ## Run PROJECT in the foreground with minimal dependencies check.
 runonly: $(RUN_PREREQUISITES)
 	$(AT) echo "Running" $(RUN_COMMAND)
-	$(AT) sync& cd $(RUN_FROM) && $(RUN_COMMAND)
+	$(RUNONLY_COMMAND)
 
 runfg: run
-run: ## Run PROJECT in the foreground after stopping previously running one
-run: stop Bela runonly
+run: ## Run PROJECT in the foreground after stopping previously running one and fully building it. Supports parallel builds
+run: stop Bela
+	$(AT) echo "Running" $(RUN_COMMAND)
+	$(RUNONLY_COMMAND)
 
 runide: ## Run PROJECT for IDE (foreground, no buffering)
 runide: stop Bela $(RUN_PREREQUISITES)
@@ -732,7 +739,7 @@ checkupdate: ## Unzips the zip file in $(UPDATES_DIR) and checks that it contain
 	  [ $$FAIL -eq 0 ] || { echo "$$path was not found in the zip archive. Maybe it is corrupted?"; exit 1; }
 	$(AT) echo 	...done
 UPDATE_LOG?=$(BELA_DIR)/../update.log
-LOG=>> $(shell realpath $(UPDATE_LOG)) 2>&1
+LOG:=>> $(shell realpath $(UPDATE_LOG)) 2>&1
 TEE_LOG=2>&1 | tee -a $(UPDATE_LOG)
 UPDATE_LOG_INIT:=echo > $(UPDATE_LOG); \
  echo DATE=`date -u +"%Y-%m-%dT%H:%M:%SZ"` $(LOG); \
@@ -787,13 +794,13 @@ update: stop
 LIB_EXTRA_SO = libbelaextra.so
 LIB_EXTRA_A = libbelaextra.a
 # some library objects are required by libbelaextra.
-LIB_EXTRA_OBJS = $(EXTRA_CORE_OBJS) build/core/GPIOcontrol.o libraries/Scope/build/Scope.o libraries/UdpClient/build/UdpClient.o libraries/UdpServer/build/UdpServer.o libraries/Midi/build/Midi.o libraries/Midi/build/Midi_c.o
+LIB_EXTRA_OBJS = $(EXTRA_CORE_OBJS) build/core/GPIOcontrol.o libraries/Scope/build/Scope.o libraries/WSServer/build/WSServer.o libraries/UdpClient/build/UdpClient.o libraries/UdpServer/build/UdpServer.o libraries/Midi/build/Midi.o libraries/Midi/build/Midi_c.o
 libraries/%.o: # how to build those objects needed by libbelaextra
 	$(AT) $(MAKE) -f Makefile.linkbela --no-print-directory $@
 
 lib/$(LIB_EXTRA_SO): $(LIB_EXTRA_OBJS)
 	$(AT) echo Building lib/$(LIB_EXTRA_SO)
-	$(AT) $(CXX) $(BELA_LDFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(LIB_EXTRA_SO) -o lib/$(LIB_EXTRA_SO) $(LIB_EXTRA_OBJS) $(LDLIBS) $(BELA_EXTRA_LDLIBS)
+	$(AT) $(CXX) $(BELA_LDFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(LIB_EXTRA_SO) -o lib/$(LIB_EXTRA_SO) $(LIB_EXTRA_OBJS) $(LDLIBS) $(BELA_CORE_LDLIBS) $(BELA_EXTRA_LDLIBS)
 	$(AT) ldconfig $(BASE_DIR)/$@
 
 lib/$(LIB_EXTRA_A): $(LIB_EXTRA_OBJS) $(PRU_OBJS) $(LIB_DEPS)
@@ -813,6 +820,15 @@ lib/$(LIB_A): $(LIB_OBJS) $(PRU_OBJS) $(LIB_DEPS)
 	$(AT) ar rcs lib/$(LIB_A) $(LIB_OBJS)
 
 lib: lib/libbela.so lib/libbela.a lib/libbelaextra.so lib/libbelaextra.a
+
+LDFLAGS_SHARED_PROJECT=-shared -Wl,-Bsymbolic -Wl,-soname,$(LIB_PROJECT_SO)
+
+$(LIB_PROJECT_SO_FULL): $(PROJECT_OBJS) $(LIBRARIES_OBJS)
+	$(AT) echo 'Linking project shared library...'
+# we filter-out %.h because they could be added by P_OBJS
+	$(AT) $(CXX) $(SYNTAX_FLAG) $(BELA_LDFLAGS) $(LIBRARIES_LDFLAGS) $(LDFLAGS_SHARED_PROJECT) $(LDFLAGS) -pthread -o "$@" $(filter-out %.h,$^) $(LDLIBS) $(LIBRARIES_LDLIBS) $(BELA_LDLIBS)
+	$(AT) echo ' ...done'
+	$(AT) echo ' '
 
 HEAVY_TMP_DIR=/tmp/heavy-bela/
 HEAVY_SRC_TARGET_DIR=$(PROJECT_DIR)

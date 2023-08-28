@@ -288,7 +288,8 @@ int Trill::identify() {
 
 void Trill::updateRescale()
 {
-	float scale = 1 << (12 - numBits);
+	enum { kRescaleFactorsComputedAtBits = 12 };
+	float scale = (1 << (16 - numBits)) / float(1 << (16 - kRescaleFactorsComputedAtBits));
 	posRescale = 1.f / trillRescaleFactors[device_type_].pos;
 	posHRescale = 1.f / trillRescaleFactors[device_type_].posH;
 	sizeRescale = scale / trillRescaleFactors[device_type_].size;
@@ -502,7 +503,7 @@ void Trill::parseNewData()
 	if(CENTROID != mode_) {
 		// parse, rescale and copy data to public buffer
 		for (unsigned int i = 0; i < getNumChannels(); ++i)
-			rawData[i] = (((dataBuffer[2 * i] << 8) + dataBuffer[2 * i + 1]) & 0x0FFF) * rawRescale;
+			rawData[i] = ((dataBuffer[2 * i] << 8) + dataBuffer[2 * i + 1]) * rawRescale;
 	} else {
 		unsigned int locations = 0;
 		// Look for 1st instance of 0xFFFF (no touch) in the buffer

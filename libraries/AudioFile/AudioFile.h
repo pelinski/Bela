@@ -70,8 +70,109 @@ namespace AudioFileUtilities {
 	/**
 	 * Load audio samples from a file into memory.
 	 *
-	 * Simplified version of write(), which only loads the first channel of
+	 * Simplified version of load(), which only loads the first channel of
 	 * the file.
 	 */
 	std::vector<float> loadMono(const std::string& file);
+};
+
+#include <libraries/sndfile/sndfile.h>
+#include <thread>
+#include <array>
+
+class AudioFile
+{
+protected:
+	typedef enum {
+		kRead,
+		kWrite,
+	} Mode;
+	enum { kNumBufs = 2};
+protected:
+	int setup(const std::string& path, size_t bufferSize, Mode mode, size_t arg0 = 0, unsigned int arg1 = 0);
+public:
+	size_t getLength() const { return sfinfo.frames; };
+	size_t getChannels() const { return sfinfo.channels; };
+	int getSampleRate() const { return sfinfo.samplerate; };
+	virtual ~AudioFile();
+private:
+	void cleanup();
+protected:
+	volatile size_t ioBuffer;
+	size_t ioBufferOld;
+protected:
+	void scheduleIo();
+	std::vector<float>& getRtBuffer();
+	std::array<std::vector<float>,kNumBufs> internalBuffers;
+	void threadLoop();
+	virtual void io(std::vector<float>& buffer) = 0;
+	std::thread diskIo;
+	size_t size;
+	volatile bool stop;
+	bool ramOnly;
+	size_t rtIdx;
+	SNDFILE* sndfile = NULL;
+	SF_INFO sfinfo = { 0 };
+};
+
+class AudioFileReader : public AudioFile
+{
+public:
+	/**
+	 * Open a file and prepare to stream it from disk.
+	 *
+	 * @param path Path to the file
+	 * @param bufferSize the size of the internal buffer. If this is larger
+	 * than the file itself, the whole file will be loaded in memory, otherwise
+	 * the file will be read from disk from a separate thread.
+	 * @param firstFrame the first frame to start plaback from. When
+	 * looping, unless set differnetly with setLoop(), it will start back from 0.
+	 */
+	int setup(const std::string& path, size_t bufferSize, size_t firstFrame = 0);
+	/**
+	 * Write interleaved samples from the file to the destination.
+	 *
+	 * @param buffer the destination buffer. Its size() must be a multiple
+	 * of getChannels().
+	 */void getSamples(std::vector<float>& buffer);
+	/**
+	 * Write interleaved samples from the file to the destination.
+	 *
+	 * @param dst the destination buffer
+	 * @param samplesCount The number of samples to write.
+	 * This has to be a multiple of getChannels().
+	 */
+	void getSamples(float* dst, size_t samplesCount);
+	int setLoop(bool loop);
+	int setLoop(size_t start, size_t end);
+	size_t getIdx();
+private:
+	void io(std::vector<float>& buffer) override;
+	bool loop;
+	size_t loopStart;
+	size_t loopStop;
+	size_t idx;
+};
+
+class AudioFileWriter : public AudioFile
+{
+public:
+	/**
+	 * Open a file and prepare to write to it.
+	 *
+	 * @param path Path to the file
+	 * @param bufferSize the size of the internal buffer.
+	 * @param channels the number of channels
+	 */
+	int setup(const std::string& path, size_t bufferSize, size_t channels, unsigned int sampleRate);
+	/**
+	 * Push interleaved samples to the file for writing
+	 *
+	 * @param buffer the source buffer. Its size() must be a multiple
+	 * of getChannels().
+	 */
+	void setSamples(std::vector<float>& buffer);
+	void setSamples(float const * src, size_t samplesCount);
+private:
+	void io(std::vector<float>& buffer) override;
 };

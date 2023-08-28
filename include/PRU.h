@@ -3,8 +3,8 @@
 #include <stdint.h>
 #include "Bela.h"
 #include "Gpio.h"
-#include "AudioCodec.h"
 #include "PruManager.h"
+struct McaspRegisters;
 
 /**
  * Internal version of the BelaContext struct which does not have const
@@ -13,7 +13,7 @@
  *
  * Important: make sure this retains the same structure as BelaContext!
  */
-typedef struct {
+typedef struct _InternalBelaContext {
 	/// \brief Buffer holding audio input samples
 	///
 	/// This buffer may be in either interleaved or non-interleaved format,
@@ -162,14 +162,16 @@ public:
 	// Initialise and open the PRU
 	int initialise(BelaHw newBelaHw, int pru_num, bool uniformSampleRate,
 				   int mux_channels,
-				   int stopButtonPin, bool enableLed);
+				   int stopButtonPin, bool enableLed,
+				   uint32_t disabledBelaDigitalChannels);
 
 	// Run the code image in pru_rtaudio_bin.h
 	int start(char * const filename, const McaspRegisters& mcaspRegisters);
 
 	// Loop: read and write data from the PRU and call the user-defined audio callback
-	void loop(void *userData, void(*render)(BelaContext*, void*), bool highPerformanceMode);
+	void loop(void *userData, void(*render)(BelaContext*, void*), bool highPerformanceMode, BelaCpuData* cpuData);
 
+	void cleanup();
 	// Wait for an interrupt from the PRU indicate it is finished
 	void waitForFinish();
 
@@ -195,6 +197,8 @@ private:
 	int hardware_analog_frames; // The actual number of frames for the analog channels, as far as the PRU is concerned
 	bool gpio_enabled;	// Whether GPIO has been prepared
 	bool led_enabled;	// Whether a user LED is enabled
+	bool analog_out_is_audio;
+	size_t pru_audio_out_channels;
 
 	PruMemory* pruMemory;
 	volatile uint32_t *pru_buffer_comm;
@@ -210,4 +214,6 @@ private:
 
 	Gpio stopButton; // Monitoring the bela cape button
 	Gpio underrunLed; // Flashing an LED upon underrun
+	Gpio adcNrstPin; // Resetting the ADC on Bela Mini Rev C
+	uint32_t disabledDigitalChannels;
 };

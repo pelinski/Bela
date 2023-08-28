@@ -99,9 +99,10 @@ export default class GuiCreator {
 		this.parameters[p.id][guiId][name] = value;
 
 		let slider = guiF.add(this.parameters[p.id][guiId], name, min, max, step);
-		// disable input
-		slider.domElement.getElementsByTagName("input")[0].disabled = true
-		slider.onChange(this.sliderCallback);
+		slider.onChange(this.sliderCallback.bind(slider));
+		slider.domElement.ondblclick = () => {
+			slider.setValue(slider.initialValue);
+		};
 		return slider;
 	}
 

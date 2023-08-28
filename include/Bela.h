@@ -27,10 +27,25 @@
 #ifndef BELA_H_
 #define BELA_H_
 #define BELA_MAJOR_VERSION 1
-#define BELA_MINOR_VERSION 11
+#define BELA_MINOR_VERSION 13
 #define BELA_BUGFIX_VERSION 0
 
 // Version history / changelog:
+// 1.14.0
+// - added disabledDigitalChannels to BelaInitSettings and corresponding command-line
+// 1.13.0
+// - added Bela_setLineOutLevel() which replaces Bela_setDacLevel() (though
+// with different semantics).
+// - in BelaInitSettings, dacGains is _replaced_ by lineOutGains
+// - replaced --dac-level with --line-out-level, -D now means --line-out-level
+// - replaced DEFAULT_DAC_LEVEL with DEFAULT_LINE_OUT_LEVEL
+// - removed setAdcLevel(): use setAudioInputGain() instead
+// - removed -A/--adc-gain, now ignored (non-bw-compatible)
+// - removed DEFAULT_ADC_LEVEL
+// - deprecated Bela_setDacLevel()
+// 1.12.0
+// - added Bela_cpuTic(), Bela_cpuToc(), Bela_cpuMonitoringInit(),
+// Bela_cpuMonitoringGet() and BelaCpuData.
 // 1.11.0
 // - added BelaChannelGain and BelaChannelGainArray
 // - added setHpLevel(), setAudioInputGain(), setAdcLevel(), setDacLevel(),
@@ -81,10 +96,17 @@ extern "C"
 // these functions are currently provided by xenomai.
 // We put these declarations here so we do not have to include
 // Xenomai specific files
-int rt_printf(const char *format, ...);
-int rt_fprintf(FILE *stream, const char *format, ...);
-int rt_vprintf(const char *format, va_list ap);
-int rt_vfprintf(FILE *stream, const char *format, va_list ap);
+// use attributes to provide printf-style compiler warnings
+#ifdef __GNUC__
+#define _ATTRIBUTE(attrs) __attribute__ (attrs)
+#else
+#define _ATTRIBUTE(attrs)
+#endif
+
+int rt_printf(const char *format, ...) _ATTRIBUTE ((__format__ (__printf__, 1, 2)));
+int rt_fprintf(FILE *stream, const char *format, ...) _ATTRIBUTE ((__format__ (__printf__, 2, 3)));
+int rt_vprintf(const char *format, va_list ap)  _ATTRIBUTE ((__format__ (__printf__, 1, 0)));
+int rt_vfprintf(FILE *stream, const char *format, va_list ap)  _ATTRIBUTE ((__format__ (__printf__, 2, 0)));
 
 /**
  * A type of Bela hardware.
@@ -103,6 +125,8 @@ typedef enum
 	BelaHw_BelaMiniMultiTdm, ///< Bela Mini with extra codecs and/or tdm devices
 	BelaHw_BelaMultiTdm, ///< Bela with extra codecs and/or tdm devices
 	BelaHw_BelaMiniMultiI2s, ///< Bela Mini with extra rx and tx I2S data lines.
+	BelaHw_BelaEs9080, ///< A Bela cape with Es9080 EVB on top, all as audio
+	BelaHw_BelaRevC, ///< A Bela cape rev C: Es9080 is used for analog outs
 	BelaHw_Batch, ///< Dummy offline
 } BelaHw;
 
@@ -147,7 +171,7 @@ typedef enum
 
 /** \cond PRIVATE */
 #define MAX_PRU_FILENAME_LENGTH 256
-#define MAX_UNUSED_LENGTH 224
+#define MAX_UNUSED_LENGTH 220
 #define MAX_PROJECTNAME_LENGTH 256
 /** \endcond */
 
@@ -169,15 +193,9 @@ typedef enum
  */
 
 /**
- * Default level of the audio DAC in decibels. See Bela_setDACLevel().
+ * Default level of the line out in decibels. See Bela_setLineOutLevel().
  */
-#define DEFAULT_DAC_LEVEL	0.0
-
-/**
- * Default level of the audio ADC in decibels. See Bela_setADCLevel().
- */
-#define DEFAULT_ADC_LEVEL	0.0
-
+#define DEFAULT_LINE_OUT_LEVEL	0.0
 
 /**
  * Default level of the Programmable Gain Amplifier in decibels.
@@ -453,9 +471,9 @@ typedef struct {
 
 	/// Whether to begin with the speakers muted
 	int beginMuted;
-	/// Level for the audio DAC output. DEPRECATED: ues dacGains
+	/// Level for the audio DAC output. DEPRECATED: ues lineOutGains
 	float dacLevel;
-	/// Level for the audio ADC input. DEPRECATED: use adcGains
+	/// Level for the audio ADC input. DEPRECATED: use audioInputGains
 	float adcLevel;
 	/// Gains for the PGA, left and right channels. DEPRECATED: use audioInputGains
 	float pgaGain[2];
@@ -525,10 +543,12 @@ typedef struct {
 	struct BelaChannelGainArray audioInputGains;
 	/// level for headphone outputs
 	struct BelaChannelGainArray headphoneGains;
-	/// Level for the audio ADC input
+	/// Level for the audio ADC input DEPRECATED: use audioInputGains
 	struct BelaChannelGainArray adcGains;
-	/// Level for the audio DAC output
-	struct BelaChannelGainArray dacGains;
+	/// Level for the audio line level output
+	struct BelaChannelGainArray lineOutGains;
+	/// A bitmask of disabled digital channels
+	uint32_t disabledDigitalChannels;
 
 	char unused[MAX_UNUSED_LENGTH];
 
@@ -832,6 +852,69 @@ void Bela_requestStop();
 int Bela_stopRequested();
 
 /** @} */
+#ifndef BELA_DISABLE_CPU_TIME
+/**
+ * \defgroup CPU Computing CPU time
+ *
+ * These functions allow to monitor CPU usage of the whole audio thread or of
+ * arbitrary sections of the program while it is running.
+ *
+ * Manually calling Bela_cpuTic() and Bela_cpuToc() around specific sections of
+ * the code, the CPU performance of these sections can be evaluated. Calling
+ * these functions incurs an overhead.
+ *
+ * When setting the internal CPU monitoring via Bela_cpuMonitoringInit(), the
+ * user can compute the CPU time of the entire audio thread. The core
+ * code internally calls Bela_cpuTic() and Bela_cpuToc() and the user can get
+ * the CPU usage details vai Bela_cpuMonitoringGet();
+ *
+ * @note These measurements are based on reading a monotonic clock and therefore they
+ * include not only actual CPU cycles consumed by the current thread but also
+ * any time the thread spends idle, either because it's blocked or because a
+ * higher priority thread is running.
+ *
+ * @{
+ */
+#include <time.h>
+typedef struct {
+	int count; ///< Number of samples (tic/toc pairs) in a acquisition cycle. Use 0 to disable.
+	unsigned int currentCount; ///< Number of tics in current acquisition cycle
+	long long unsigned int busy; ///< Total CPU time spent being busy (between tic and toc) during the current acquisition cycle
+	long long unsigned int total; ///< Total CPU time (between tic and previous tic) during the current acquisition cycle
+	struct timespec tic; ///< Time of last tic
+	struct timespec toc; ///< Time of last toc
+	float percentage; ///< Average CPU usage during previous acquisition cycle
+} BelaCpuData;
+/**
+ * Set internal CPU monitoring for the audio thread.
+ * @param count Number of samples (tic/toc pairs) in a acquisition cycle. Use 0 to disable.
+ * @return 0 on success, an error code otherwise.
+ */
+int Bela_cpuMonitoringInit(int count);
+/**
+ * Get stats about internal CPU monitoring.
+ *
+ * @return a pointer to a BelaCpuData structure which contains data about the
+ * CPU usage of the audio thread.
+ */
+BelaCpuData* Bela_cpuMonitoringGet();
+/**
+ * Start measuring CPU time. When `data->currentCount` reaches `data->count`, a
+ * acquisition cycle is completed. `data->percentage` gives the average CPU busy time
+ * during the latest completed acquisition cycle.
+ *
+ * @param data The `count` field is an input and needs to be populated before calling. Other fields are used as I/O by the function.
+ */
+void Bela_cpuTic(BelaCpuData* data);
+/**
+ * Stop measuring CPU time.
+ *
+ * @param data The `count` field is an input and needs to be populated before calling. Other fields are used as I/O by the function.
+ */
+void Bela_cpuToc(BelaCpuData* data);
+
+/** @} */
+#endif // BELA_DISABLE_CPU_TIME
 
 /**
  * \defgroup levels Audio level controls
@@ -845,19 +928,24 @@ int Bela_stopRequested();
 // *** Volume and level controls ***
 
 /**
- * \brief Set the level of the audio DAC.
- *
- * This function sets the level of all audio outputs (headphone, line, speaker). It does
- * not affect the level of the (non-audio) analog outputs.
+ * \brief Set the level of the audio line out.
  *
  * \b Important: do not call this function from within render(), as it does not make
  * any guarantees on real-time performance.
  *
  * \param channel The channel to set. Use a negative value to set all channels.
- * \param decibels Level of the DAC output. Valid levels range from -63.5 (lowest) to
- * 0 (highest) in steps of 0.5dB. Levels between increments of 0.5 will be rounded down.
+ * \param decibels Level of the line output. Valid values will depend on the codec in use.
  *
  * \return 0 on success, or nonzero if an error occurred.
+ */
+int Bela_setLineOutLevel(int channel, float decibel);
+
+/**
+ * \brief Set the level of the audio DAC.
+ *
+ * DEPRECATED.
+ *
+ * Use `Bela_setLineOutLevel()` instead.
  */
 int Bela_setDacLevel(int channel, float decibels);
 

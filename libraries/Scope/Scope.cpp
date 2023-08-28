@@ -1,9 +1,10 @@
 #include "Scope.h"
 #include <libraries/ne10/NE10.h>
 #include <math.h>
-#include <WSServer.h>
+#include <libraries/WSServer/WSServer.h>
 #include <JSON.h>
 #include <AuxTaskRT.h>
+#include <stdexcept>
 
 Scope::Scope(): isUsingOutBuffer(false), 
                 isUsingBuffer(false), 
@@ -24,6 +25,10 @@ Scope::Scope(unsigned int numChannels, float sampleRate){
 
 void Scope::cleanup(){
 	dealloc();
+	// ensure that all connections are closed before
+	// destroying the object, so we avoid calling the disconnect callback
+	// after the Scope object has been destroyed
+	ws_server.reset();
 }
 Scope::~Scope(){
 	cleanup();
@@ -56,13 +61,13 @@ void Scope::setup(unsigned int _numChannels, float _sampleRate){
 	ws_server->setup(5432);
 	ws_server->addAddress("scope_data", nullptr, nullptr, nullptr, true);
 	ws_server->addAddress("scope_control", 
-		[this](std::string address, void* buf, int size){
+		[this](const std::string& address, const WSServerDetails* id, const unsigned char* buf, size_t size){
 			scope_control_data((const char*) buf);
 		},
-		[this](std::string address){
+		[this](const std::string& address, const WSServerDetails* id){
 			scope_control_connected();
 		},
-		[this](std::string address){
+		[this](const std::string& address, const WSServerDetails* id){
 			stop();
 		});
 
@@ -549,11 +554,11 @@ void Scope::scope_control_connected(){
 	for (auto setting : settings){
 		root[setting.first] = new JSONValue(setting.second);
 	}
-	JSONValue *value = new JSONValue(root);
-	std::wstring wide = value->Stringify().c_str();
+	JSONValue value(root);
+	std::wstring wide = value.Stringify().c_str();
 	std::string str( wide.begin(), wide.end() );
 	// printf("sending JSON: \n%s\n", str.c_str());
-	ws_server->sendNonRt("scope_control", str.c_str());
+	ws_server->sendNonRt("scope_control", str.c_str(), WSServer::kThreadCallback);
 }
 
 // on_data callback for scope_control websocket
@@ -563,8 +568,8 @@ void Scope::scope_control_data(const char* data){
 	// printf("recieved: %s\n", data);
 	
 	// parse the data into a JSONValue
-	JSONValue *value = JSON::Parse(data);
-	if (value == NULL || !value->IsObject()){
+	std::shared_ptr<JSONValue> value = std::shared_ptr<JSONValue>(JSON::Parse(data));
+	if (!value || !value->IsObject()){
 		printf("could not parse JSON:\n%s\n", data);
 		return;
 	}
@@ -584,12 +589,12 @@ void Scope::scope_control_data(const char* data){
 	parse_settings(value);
 }
 
-void Scope::parse_settings(JSONValue* value){
+void Scope::parse_settings(std::shared_ptr<JSONValue> value){
 	// printf("parsing settings\n");
 	std::vector<std::wstring> keys = value->ObjectKeys();
-	for (auto key : keys){
+	for (auto& key : keys){
 		JSONValue *key_value = value->Child(key.c_str());
-		if (key_value->IsNumber())
+		if (key_value && key_value->IsNumber())
 			setSetting(key, (float)key_value->AsNumber());
 	}
 }

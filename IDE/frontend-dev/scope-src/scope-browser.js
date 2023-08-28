@@ -125,11 +125,45 @@ controlView.on('settings-event', (key, value) => {
   settings.setKey(key, value);
 });
 
+
+let legend = {
+  update(channelConfig) {
+    if(!this.panel)
+    {
+      this.panel = $('<div data-legend-panel/>');
+      this.panel.appendTo('body')
+    }
+    this.panel.empty();
+    for(let n = 0; n < channelConfig.length; ++n)
+    {
+      let channel = channelConfig[n];
+      let ch = $('<div></div>');
+      // channels are 1-based in the control panel, so we mirror it in the
+      // text here
+      let label = $('<div data-legend-color-label />').text(n + 1);
+      let box = $('<input>');
+      box.attr('type', 'checkbox');
+      box.attr('data-key', 'enabled');
+      box.attr('data-channel', n);
+      box.attr('data-legend-color-box', '');
+      if(channelConfig[n].enabled) {
+        box.attr('checked', 'checked');
+        box.css('background-color', channel.color.replace('0x', '#'));
+      }
+      ch.append(label).append(box);
+
+      $('input', ch).on('input', (e) => channelView.inputChanged($(e.currentTarget), e));
+      this.panel.append(ch);
+    }
+  },
+}
+
 channelView.on('channelConfig', (channelConfig) => {
   worker.postMessage({
     event     : 'channelConfig',
     channelConfig
   });
+  legend.update(channelConfig);
 });
 
 sliderView.on('slider-value', (slider, value) => {
@@ -321,12 +355,26 @@ function CPU(data){
     if (plot){
       plot = false;
       ctx.clear();
+      let minY = 0;
+      let maxY = renderer.height;
       for (var i=0; i<numChannels; i++){
+        if(!channelConfig[i].enabled)
+          continue;
         ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, 1);
         let iLength = i*length;
-        ctx.moveTo(0, frame[iLength] + xOff*(frame[iLength + 1] - frame[iLength]));
+        let constrain = (v, min, max) => {
+          if(v < min)
+            return min;
+          if(v > max)
+            return max;
+          return v;
+        }
+        let curr = constrain(frame[iLength], minY, maxY);
+        let next = constrain(frame[iLength + 1], minY, maxY);
+        ctx.moveTo(0, curr + xOff*(next - curr));
         for (var j=1; (j-xOff)<length; j++){
-          ctx.lineTo(j-xOff, frame[j+iLength]);
+          let curr = constrain(frame[j + iLength], minY, maxY);
+          ctx.lineTo(j-xOff, curr);
         }
       }
       renderer.render(stage);

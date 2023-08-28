@@ -1,14 +1,7 @@
-/***** Scope.h *****/
-#ifndef __Scope_H_INCLUDED__
-#define __Scope_H_INCLUDED__ 
-
+#pragma once
 #include <ne10/NE10_types.h>
 #include <vector>
 #include <map>
-#include <string>
-#include <AuxTaskNonRT.h>
-#include <AuxTaskRT.h>
-#include <cmath>
 #include <memory>
 
 #define FRAMES_STORED 4
@@ -108,7 +101,7 @@ class Scope{
         void setXParams();
         void scope_control_connected();
         void scope_control_data(const char* data);
-        void parse_settings(JSONValue* value);
+        void parse_settings(std::shared_ptr<JSONValue> value);
         
 	bool volatile isUsingOutBuffer;
 	bool volatile isUsingBuffer;
@@ -179,5 +172,3 @@ class Scope{
         
 		std::map<std::wstring, float> settings;
 };
-
-#endif

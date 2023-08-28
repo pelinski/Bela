@@ -27,15 +27,14 @@ public:
 		unsigned int firstSlot = 0;
 	};
 	int initCodec();
-	int startAudio(int dual_rate);
+	int startAudio(int shouldBeReady);
 	int stopAudio();
 	unsigned int getNumIns();
 	unsigned int getNumOuts();
 	float getSampleRate();
 
 	int setInputGain(int channel, float newGain);
-	int setDacVolume(int channel, float gain);
-	int setAdcVolume(int channel, float gain);
+	int setLineOutVolume(int channel, float gain);
 	int setHpVolume(int channel, float gain);
 	int disable();
 	int reset();

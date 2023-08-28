@@ -1,16 +1,6 @@
-/*
- * Midi.h
- *
- *  Created on: 15 Jan 2016
- *      Author: giulio
- */
-
-#ifndef MIDI_H_
-#define MIDI_H_
-
+#pragma once
 #include <Bela.h>
 #include <vector>
-#include <alsa/asoundlib.h>
 #include <string>
 #ifdef XENOMAI_SKIN_native
 #include <native/pipe.h>
@@ -288,6 +278,7 @@ public:
 };
 
 
+typedef struct _snd_rawmidi snd_rawmidi_t;
 class Midi {
 public:
 	Midi();
@@ -426,6 +417,3 @@ private:
 	int sock;
 #endif
 };
-
-
-#endif /* MIDI_H_ */

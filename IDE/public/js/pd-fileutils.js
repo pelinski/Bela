@@ -161,6 +161,7 @@ var defaults = {
   glyphHeight: 9,
   textPadding: 6,
   svgFile: true,
+  removeOld: true,
   style: isBrowser ? null : defaultStyle
 }
 
@@ -168,7 +169,8 @@ exports.render = function(patch, opts) {
   opts = opts || {}
   _.defaults(opts, defaults)
 
-  d3.select('svg').remove()
+  if(opts.removeOld)
+    d3.select('svg').remove()
   var svgContainer = d3.select('body').append('div')
     , svg = svgContainer.append('svg')
       .attr('xmlns', 'http://www.w3.org/2000/svg')
@@ -11334,6 +11336,9 @@ var recursParse = function(txt) {
       }
 
       nextLine()
+    } else if (chunkType === '#C') {
+      console.log("Line ignored:", line);
+      nextLine();
     } else throw new Error('invalid chunk : ' + chunkType)
 
     firstLine = false

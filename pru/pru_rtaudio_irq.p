@@ -15,7 +15,7 @@
 //#define ENABLE_CTAG_BEAST // enables run-time selection of the CTAG Beast codecs
 #define ENABLE_BELA_TLV32 // enables run-time selection of the Bela TLV32 codec
 #define ENABLE_BELA_GENERIC_TDM // enables run-time selection of custom TDM options
-//#define ENABLE_MUXER // enables run-time selection of the Multiplexer capelet
+#define ENABLE_MUXER // enables run-time selection of the Multiplexer capelet
 // there are some issues with this code and this codec.
 // See https://github.com/BelaPlatform/Bela/issues/480
 
@@ -99,7 +99,8 @@
 #define ADC_GPIO_BELA_MINI      GPIO0
 #define ADC_CS_PIN_BELA_MINI    (1<<5) // GPIO0:5 = P1 pin 6
 #define ADC_TRM       0       // SPI transmit and receive
-#define ADC_WL        16      // Word length
+#define ADC_WL_ADS816X   24   // Word length for ADS816x ADC
+#define ADC_WL_AD7699    16   // Word length for AD7699 ADC
 #define ADC_CLK_MODE  0       // SPI mode
 #define ADC_CLK_DIV   1       // Clock divider (48MHz / 2^n)
 #define ADC_DPE       1       // d0 = receive, d1 = transmit
@@ -107,6 +108,13 @@
 #define AD7699_CFG_MASK       0xF120 // Mask for config update, unipolar, full BW
 #define AD7699_CHANNEL_OFFSET 9      // 7 bits offset of a 14-bit left-justified word
 #define AD7699_SEQ_OFFSET     3      // sequencer (0 = disable, 3 = scan all)
+
+#define ADS816X_INIT_DEVICE_CFG       0x081C00  // Write DEVICE_CFG to 0x00
+#define ADS816X_WRITE_CHANNEL_REG     0x081D00  // Write (0x01 << 19) CHANNEL_REG (0x1D << 8)
+#define ADS816X_DATA_OFFSET           8         // Right shift required to get ADC data
+#define ADS816X_COMMAND_WRITE         0x080000  // Write register command (0x01 << 19)
+#define ADS816X_COMMAND_READ          0x100000  // Read register command (0x02 << 19)
+#define ADS816X_REG_ACCESS            0x000000  // REG_ACCESS has address 0 (<< 8)
 
 #define SHARED_COMM_MEM_BASE  		0x00010000  // Location where comm flags are written
 
@@ -319,6 +327,7 @@
 #define FLAG_BIT_CTAG_FACE      12
 #define FLAG_BIT_CTAG_BEAST     13
 #define FLAG_BIT_BELA_MULTI_TLV	14
+#define FLAG_BIT_ADS816X        15
 
 // reg_flags should hold the number of audio in/out channels, up to 32
 #define FLAG_BIT_AUDIO_IN_CHANNELS0 16
@@ -400,11 +409,6 @@ MOV r31.b0, PRU_SYSTEM_EVENT_RTDM_WRITE_VALUE
 .macro IF_NOT_BELA_TLV32_OR_BELA_MULTI_TLV_JMP_TO
 .mparam DEST
     QBBS DEST, reg_flags, FLAG_BIT_CTAG
-.endm
-
-.macro IF_NOT_BELA_MINI_JMP_TO
-.mparam DEST
-    QBBC DEST, reg_flags, FLAG_BIT_BELA_MINI
 .endm
 
 .macro IF_NOT_BELA_MULTI_TLV_JMP_TO
@@ -515,6 +519,11 @@ DONE:
 	AND DEST, DEST, (64-1)
 .endm
 
+.macro GET_NUM_MCASP_OUT_CHANNELS
+.mparam DEST
+	LBBO DEST, reg_comm_addr, COMM_MCASP_OUT_CHANNELS, 4
+.endm
+
 .macro GET_NUM_AUDIO_OUT_CHANNELS
 .mparam DEST
 	LSR DEST, reg_flags, FLAG_BIT_AUDIO_OUT_CHANNELS0
@@ -598,6 +607,31 @@ DIGITAL:
 //r27 is now the input word passed in render(), one word per frame
 //[31:16]: data(1=high, 0=low), [15:0]: direction (0=output, 1=input) )
 
+// Prepare a write to the ADC depending on which part we use
+// Register holds channel number at input, then turns into
+// the value to write to the ADC to read that channel
+.macro ADC_PREPARE_DATA
+.mparam data
+QBBC ADC_IS_AD7699, reg_flags, FLAG_BIT_ADS816X
+     MOV r27, ADS816X_WRITE_CHANNEL_REG
+     OR data, data, r27
+     QBA DONE
+ADC_IS_AD7699:
+     MOV r27, AD7699_CFG_MASK
+     LSL data, data, AD7699_CHANNEL_OFFSET
+     OR data, data, r27
+DONE:
+.endm
+
+// Process the results of the ADC transaction to retrieve
+// the sampled value
+.macro ADC_PROCESS_DATA
+.mparam data
+QBBC DONE, reg_flags, FLAG_BIT_ADS816X
+     // Right shift ADC output to get result
+     LSR data, data, ADS816X_DATA_OFFSET
+DONE:
+.endm
 
 //Preparing the gpio_oe, gpio_cleardataout and gpio_setdataout for each module
 //r2 will hold GPIO1_OE
@@ -899,6 +933,25 @@ DONE:
      ADC_CS_UNASSERT
 .endm
 
+.macro DO_DIGITAL
+// execution from here to the end of the macro takes 1.8us, while usually
+// ADC_WAIT_FOR_FINISH only waits for 1.14us.
+//TODO: it would be better to split the DIGITAL stuff in two parts:
+//- one taking place during DAC_WRITE which sets the GPIO_OE
+//- and the other during ADC_WRITE which actually reads DATAIN and writes CLEAR/SET DATAOUT
+     // do not use r27 from here to ...
+     LBBO r27, reg_digital_current, 0, 4
+     JAL r28.w0, DIGITAL // note that this is not called as a macro, but with JAL. r28 will contain the return address
+     // in the low word, set the bits corresponding to output values to 0
+     // this way, if the ARM program crashes, the PRU will write 0s to the outputs
+     LSL r28, r27, 16
+     // high word now contains bitmask with 0s where outputs are
+     AND r27.w2, r28.w2, r27.w2 // mask them out
+     SBBO r27, reg_digital_current, 0, 4
+     //..here you can start using r27 again
+     ADD reg_digital_current, reg_digital_current, 4 //increment pointer
+.endm
+
 // Complete ADC write+read with chip select and also performs IO for digital
 .macro ADC_WRITE_GPIO
 .mparam in, out, do_gpio
@@ -914,16 +967,7 @@ CASE_4_OR_8_CHANNELS:
      AND r27, do_gpio, 0x3 // only do a DIGITAL every 2 SPI I/O
      QBNE GPIO_DONE, r27, 0 
 DO_GPIO:
-//from here to GPIO_DONE takes 1.8us, while usually ADC_WAIT_FOR_FINISH only waits for 1.14us.
-//TODO: it would be better to split the DIGITAL stuff in two parts:
-//- one taking place during DAC_WRITE which sets the GPIO_OE
-//- and the other during ADC_WRITE which actually reads DATAIN and writes CLEAR/SET DATAOUT
-                            //r27 is actually r27, so do not use r27 from here to ...
-     LBBO r27, reg_digital_current, 0, 4 
-     JAL r28.w0, DIGITAL // note that this is not called as a macro, but with JAL. r28 will contain the return address
-     SBBO r27, reg_digital_current, 0,   4 
-                            //..here you can start using r27 again
-     ADD reg_digital_current, reg_digital_current, 4 //increment pointer
+     DO_DIGITAL
 GPIO_DONE:
      ADC_WAIT_FOR_FINISH
      ADC_RX out
@@ -1222,8 +1266,8 @@ SPI_WAIT_RESET:
      MOV r2, (3 << 27) | (DAC_DPE << 16) | (DAC_TRM << 12) | ((DAC_WL - 1) << 7) | (DAC_CLK_DIV << 2) | DAC_CLK_MODE | (1 << 6)
      SBBO r2, reg_spi_addr, SPI_CH0CONF, 4
 
-     // Configure CH1 for ADC
-     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
+     // Configure CH1 for ADC, starting with ADS816X
+     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL_ADS816X - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
      SBBO r2, reg_spi_addr, SPI_CH1CONF, 4
 
      // Enable interrupts TX0_EMPTY__ENABLE for DACs and RX1_FULL__ENABLE for ADCs
@@ -1244,33 +1288,80 @@ SPI_WAIT_RESET:
      MOV r2, (0x07 << AD5668_COMMAND_OFFSET)
      DAC_WRITE r2
 
-     // Initialise ADC
-     MOV r2, AD7699_CFG_MASK | (0 << AD7699_CHANNEL_OFFSET) | (0 << AD7699_SEQ_OFFSET)
+     // Detect ADS816x ADC by writing and reading back a magic number in a register
+     // This will have no effect as REG_ACCESS needs to be 0xAA to enable writing control
+     // registers (which we don't need to do anyway), and on AD7699 it will also not update
+     // any of the registers.
+     SET reg_flags, reg_flags, FLAG_BIT_ADS816X
+
+     MOV r2, ADS816X_COMMAND_WRITE | ADS816X_REG_ACCESS | 0x05
      ADC_WRITE r2, r2
+
+     MOV r2, ADS816X_COMMAND_READ | ADS816X_REG_ACCESS | 0x00
+     ADC_WRITE r2, r2
+
+     // Read back REG_ACCESS and initialise ADC
+     MOV r2, ADS816X_INIT_DEVICE_CFG
+     ADC_WRITE r2, r2
+
+     // REG_ACCESS is in top 8 bits of a 24-bit word
+     LSR r2, r2, 16
+     QBEQ ADC_INIT_DONE, r2, 0x05
+
+     // Expected value not found: assume AD7699 and reinit SPI
+
+     // Turn off ADC SPI channels
+     MOV r2, 0x00
+     SBBO r2, reg_spi_addr, SPI_CH1CTRL, 4
+
+     // Configure CH1 for AD7699 instead
+     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL_AD7699 - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
+     SBBO r2, reg_spi_addr, SPI_CH1CONF, 4
+
+     // Turn on ADC SPI channels
+     MOV r2, 0x01
+     SBBO r2, reg_spi_addr, SPI_CH1CTRL, 4
+
+     CLR reg_flags, reg_flags, FLAG_BIT_ADS816X
+
+ADC_INIT_DONE:
 
      // Enable DAC internal reference
      MOV r2, (0x08 << AD5668_COMMAND_OFFSET) | (0x01 << AD5668_REF_OFFSET)
      DAC_WRITE r2
     
      // Read ADC ch0 and ch1: result is always 2 samples behind so start here
-     MOV r2, AD7699_CFG_MASK | (0x00 << AD7699_CHANNEL_OFFSET)
+     MOV r2, 0x00
+     ADC_PREPARE_DATA r2
      ADC_WRITE r2, r2
 
-     MOV r2, AD7699_CFG_MASK | (0x01 << AD7699_CHANNEL_OFFSET)
+     MOV r2, 0x01
+     ADC_PREPARE_DATA r2
      ADC_WRITE r2, r2
 
 SPI_INIT_DONE:	
+// this limit is because of how data is loaded in blocks from RAM and unrolled into registers. Changes to WRITE_ONE_BUFFER could extend it
+#define MCASP_MAX_CHANNELS 16
 
     // Check how many channels we have
     READ_ACTIVE_CHANNELS_INTO_FLAGS
     GET_NUM_AUDIO_IN_CHANNELS r2
-    GET_NUM_AUDIO_OUT_CHANNELS r3
-    // And that they are a valid number (at least one input OR output channel)
-    QBNE CHANNEL_COUNT_NOT_ZERO, r2, 0
-    QBNE CHANNEL_COUNT_NOT_ZERO, r3, 0
+    GET_NUM_MCASP_OUT_CHANNELS r3
+    // And that they are a valid number:
+    // at least one input OR output channel
+    ADD r4, r2, r3
+    QBEQ INIT_ERROR, r4, 0
+    // smaller than the max (yes, operator order is confusing)
+    QBLT INIT_ERROR, r2, MCASP_MAX_CHANNELS
+    QBLT INIT_ERROR, r3, MCASP_MAX_CHANNELS
+    // consistent
+    GET_NUM_AUDIO_OUT_CHANNELS r2
+    QBLT INIT_ERROR, r2, r3
+    QBA CHANNEL_COUNT_OK
+INIT_ERROR:
     SEND_ERROR_TO_ARM ARM_ERROR_INVALID_INIT
     HALT
-CHANNEL_COUNT_NOT_ZERO:
+CHANNEL_COUNT_OK:
 
 // Initialisation of PRU memory pointers and counters
     LBBO reg_frame_mcasp_total, reg_comm_addr, COMM_BUFFER_MCASP_FRAMES, 4  // Total frame count for McASP
@@ -1529,7 +1620,7 @@ WRITE_FRAME_NOT_BELA_TLV32:
 #endif /* ENABLE_BELA_TLV32 */
 #ifdef ENABLE_BELA_GENERIC_TDM
 	IF_NOT_BELA_MULTI_TLV_JMP_TO WRITE_FRAME_NOT_MULTI_TLV
-	GET_NUM_AUDIO_OUT_CHANNELS r2 // How many channels?
+	GET_NUM_MCASP_OUT_CHANNELS r2 // How many channels for the McASP
 WRITE_FRAME_MULTI_TLV_LOOP:
 	MCASP_WRITE_TO_DATAPORT 0x00, 4 // Write 4 bytes for each channel
 	SUB r2, r2, 1
@@ -1629,7 +1720,8 @@ INNER_EVENT_LOOP:
 NOT_NEXT_FRAME:
 
      // Check if ARM says should finish: flag is zero as long as it should run
-     LBBO r27, reg_comm_addr, COMM_SHOULD_STOP, 4
+     //LBBO r27, reg_comm_addr, COMM_SHOULD_STOP, 4
+     MOV r27, 0
      QBEQ CONTINUE_RUNNING, r27, 0
      JAL r28.w0, CLEANUP // JAL allows longer jumps than JMP, but we actually ignore r28 (will never come back)
 CONTINUE_RUNNING:
@@ -1749,13 +1841,18 @@ LOAD_AUDIO_FRAME_NOT_BELA_TLV32:
      LDI r16, 0
 
      // TLVTODO: this only works up to 16 channels based on number of registers
+     // get how many channels of audio ARM has put into memory
+     // for us to fetch
      GET_NUM_AUDIO_OUT_CHANNELS r0
-     QBGT LOAD_AUDIO_FRAME_MULTI_TLV_LT16CHAN, r0, 16
-     LDI r0, 16
+     QBGT LOAD_AUDIO_FRAME_MULTI_TLV_LT16CHAN, r0, MCASP_MAX_CHANNELS
+     LDI r0, MCASP_MAX_CHANNELS
 LOAD_AUDIO_FRAME_MULTI_TLV_LT16CHAN:
      LSL r0, r0, 1 // 16 bits per channel
+     // ... and fetch them
      LBCO r1, C_MCASP_MEM, reg_mcasp_dac_current, b0
+     // store zeros in their place
      SBCO r9, C_MCASP_MEM, reg_mcasp_dac_current, b0
+     // increment pointer
      ADD reg_mcasp_dac_current, reg_mcasp_dac_current, r0.b0
      QBA LOAD_AUDIO_FRAME_DONE
 LOAD_AUDIO_FRAME_NOT_MULTI_TLV:
@@ -1817,6 +1914,100 @@ WRITE_AUDIO_FRAME_NOT_BELA_TLV32:
 #endif /* ENABLE_BELA_TLV32 */
 #ifdef ENABLE_BELA_GENERIC_TDM
 IF_NOT_BELA_MULTI_TLV_JMP_TO WRITE_AUDIO_FRAME_NOT_MULTI_TLV
+     LBBO r10, reg_comm_addr, COMM_SHOULD_STOP, 4
+     QBEQ CONT, r10, 0
+     HALT
+CONT:
+     LBBO r9, reg_comm_addr, COMM_MCASP_OUT_SERIALIZERS_DISABLED_SUBSLOTS, 4
+     // for each disabled slot, we shift all remaining registers forward
+     MOV r12, 0
+SHIFTING_LOOP_START:
+     QBBC SHIFTING_LOOP_NEXT, r9, 0
+     // if we are here, we need to shit forward all channels from r12 onwards
+     // to avoid messing with unused registers, we  should start from the
+     // correct instruction below based on how many subslots the mcasp has.
+     // We compute the jump destination as an offset of START_SHIFTING
+     // we need to jump (MCASP_MAX_CHANNELS - numMcaspSubSlots) blocks
+     // down; each block is two instructions wide
+     GET_NUM_MCASP_OUT_CHANNELS r0
+     MOV r10, MCASP_MAX_CHANNELS
+     // r10 = MCASP_MAX_CHANNELS - numMcaspSubSlots
+     SUB r10, r10, r0
+     // r10 is the number of blocks; each is 2 instructions wide:
+     // r10 = r10 * 2
+     LSL r10, r10, 1
+     LDI r11, START_SHIFTING
+     ADD r11, r11, r10
+     JMP r11
+START_SHIFTING:
+     // TODO: refactor this using the MVIW or MVID instructions
+     // these are not well documented and this also needs fixing prudis to
+     // understand the instructions
+     // here is an example:
+     // this (mwiD, where D means 4 bytes) copies the content of
+     // r3.w2 into r3.w0 and r4.w0 into r3.w2
+     // LDI r1.b0, &r3.w0
+     // LDI r1.b1, &r3.w2
+     // MVID *r1.b0, *r1.b1
+SS15:
+     MOV r8.w2, R8.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 15
+SS14:
+     MOV r8.w0, R7.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 14
+SS13:
+     MOV r7.w2, R7.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 13
+SS12:
+     MOV r7.w0, R6.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 12
+SS11:
+     MOV r6.w2, R6.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 11
+SS10:
+     MOV r6.w0, R5.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 10
+SS09:
+     MOV r5.w2, R5.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 9
+SS08:
+     MOV r5.w0, R4.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 8
+SS07:
+     MOV r4.w2, R4.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 7
+SS06:
+     MOV r4.w0, R3.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 6
+SS05:
+     MOV r3.w2, R3.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 5
+SS04:
+     MOV r3.w0, R2.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 4
+SS03:
+     MOV r2.w2, R2.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 3
+SS02:
+     MOV r2.w0, R1.w2
+     QBEQ SHIFTING_LOOP_NEXT, r12, 2
+SS01:
+     MOV r1.w2, R1.w0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 1
+SS00:
+     MOV r1.w0, 0
+     QBEQ SHIFTING_LOOP_NEXT, r12, 0
+SHIFTING_LOOP_NEXT:
+     LSR r9, r9, 1
+     ADD r12, r12, 1
+     QBNE SHIFTING_LOOP_START, r9, 0
+SHIFTING_LOOP_DONE:
+
+     // above, we will have shifted all the relevant data in the subslots we
+     // need it to be. Now see how many channels the McASP actually
+     // has and write to all of those
+     GET_NUM_MCASP_OUT_CHANNELS r0
+     LSL r0, r0, 1 // 16 bits per channel
      AND r9, r17, r1
      LSR r10, r1, 16
 	 MCASP_WRITE_TO_DATAPORT r9, 8
@@ -2083,10 +2274,9 @@ ANALOG_CHANNEL_4_END:
      ADD r16, r16, 2
      SUB r17, reg_num_channels, 1
      AND r16, r16, r17
-     LSL r16, r16, AD7699_CHANNEL_OFFSET
-     MOV r17, AD7699_CFG_MASK
-     OR r16, r16, r17
-     ADC_WRITE r16, r16 // Get first sample
+     ADC_PREPARE_DATA r16
+     ADC_WRITE r16, r16
+     ADC_PROCESS_DATA r16
      MOV r17, 0xFFFF // Mask low word
      AND r0, r16, r17
 
@@ -2109,10 +2299,10 @@ ANALOG_CHANNEL_5_END:
      ADD r16, r16, 2
      SUB r17, reg_num_channels, 1
      AND r16, r16, r17
-     LSL r16, r16, AD7699_CHANNEL_OFFSET
-     MOV r17, AD7699_CFG_MASK
-     OR r16, r16, r17
-     ADC_WRITE r16, r16 // Get second sample
+     ADC_PREPARE_DATA r16
+     ADC_WRITE r16, r16
+     ADC_PROCESS_DATA r16
+
      LSL r16, r16, 16 // Move result to high word
      OR r0, r0, r16
 
@@ -2137,10 +2327,9 @@ ANALOG_CHANNEL_6_END:
      ADD r16, r16, 2
      SUB r17, reg_num_channels, 1
      AND r16, r16, r17
-     LSL r16, r16, AD7699_CHANNEL_OFFSET
-     MOV r17, AD7699_CFG_MASK
-     OR r16, r16, r17
-     ADC_WRITE r16, r16 // Get first sample
+     ADC_PREPARE_DATA r16
+     ADC_WRITE r16, r16
+     ADC_PROCESS_DATA r16
      MOV r17, 0xFFFF // Mask low word
      AND r1, r16, r17
 
@@ -2163,10 +2352,9 @@ ANALOG_CHANNEL_7_END:
      ADD r16, r16, 2
      SUB r17, reg_num_channels, 1
      AND r16, r16, r17
-     LSL r16, r16, AD7699_CHANNEL_OFFSET
-     MOV r17, AD7699_CFG_MASK
-     OR r16, r16, r17
-     ADC_WRITE r16, r16 // Get second sample
+     ADC_PREPARE_DATA r16
+     ADC_WRITE r16, r16
+     ADC_PROCESS_DATA r16
      LSL r16, r16, 16 // Move result to high word
      OR r1, r1, r16
 
@@ -2197,14 +2385,7 @@ PROCESS_SPI_END:
 
      // Skip digital processing if digital IOs are disabled
      QBBC PROCESS_DIGITAL_END, reg_flags, FLAG_BIT_USE_DIGITAL
-
-     //r27 is actually r27, so do not use r27 from here to ...
-     LBBO r27, reg_digital_current, 0, 4 
-     JAL r28.w0, DIGITAL // note that this is not called as a macro, but with JAL. r28 will contain the return address
-     SBBO r27, reg_digital_current, 0,   4 
-     //..here you can start using r27 again
-
-     ADD reg_digital_current, reg_digital_current, 4 //increment pointer
+     DO_DIGITAL
 
 PROCESS_DIGITAL_END:
 
@@ -2363,7 +2544,8 @@ LED_BLINK_OFF:
      SBBO r2, r3, 0, 4       // Clear GPIO pin  
 LED_BLINK_DONE: 
      // Check if we should finish: flag is zero as long as it should run
-     LBBO r2, reg_comm_addr, COMM_SHOULD_STOP, 4
+     //LBBO r2, reg_comm_addr, COMM_SHOULD_STOP, 4
+     mov r2, 0
      QBNE CLEANUP, r2, 0
 	 JMP WRITE_ONE_BUFFER
 

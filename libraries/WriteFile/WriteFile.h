@@ -7,12 +7,9 @@
 
 #ifndef WRITEFILE_H_
 #define WRITEFILE_H_
-#include <Bela.h>
 #include <vector>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
+#include <string>
+#include <stdint.h>
 
 typedef enum {
 	kBinary,
@@ -21,38 +18,33 @@ typedef enum {
 
 class WriteFile {
 private:
-	static AuxiliaryTask writeAllFilesTask;
-	bool echo;
 	int echoedLines;
 	int echoPeriod;
-	char *header;
-	char *footer;
-	char *stringBuffer;
-	int stringBufferLength;
+	std::string header;
+	std::string footer;
+	std::vector<char> stringBuffer;
 	std::vector<float> buffer;
 	int textReadPointer;
 	int binaryReadPointer;
 	int writePointer;
-	bool variableOpen;
-	char* format;
+	std::string format;
 	int lineLength;
 	WriteFileType fileType;
-	static int sleepTimeMs;
 	FILE *file;
-	char* _filename;
+	std::string filename;
+	std::vector<std::string> formatTokens;
+	bool echo;
+	bool cleaned = false;
+	volatile bool shouldFlush = false;
+	static constexpr size_t sleepTimeMs = 5;
 	void writeLine();
 	void writeHeader();
 	void writeFooter();
-	void allocateAndCopyString(const char* source, char** destination);
-	void print(const char* string);
-	void printBinary(const char* string);
+	void print(const std::string& string);
 	void setLineLength(int newLineLength);
 	int getOffsetFromPointer(int aPointer);
-	std::vector<char *> formatTokens;
-	static void sanitizeString(char* string);
-	static void sanitizeString(char* string, int numberOfArguments);
+	static std::string sanitizeString(const std::string& string);
 	static bool isThreadRunning();
-	static bool auxiliaryTaskRunning;
 	static bool threadShouldExit();
 	static bool threadIsExiting;
 	static bool threadRunning;
@@ -63,7 +55,7 @@ private:
 	void writeOutput(bool flush);
 public:
 	WriteFile();
-	WriteFile(const char* filename, bool overwrite, bool append);
+	WriteFile(const std::string& filename, bool overwrite, bool append);
 
 	/**
 	 * Set the type of file to write, can be either kText or kBinary.
@@ -100,19 +92,19 @@ public:
 	 * Only %f is allowed (with modifiers). When in binary mode,
 	 * the specified format is used only for echoing to console.
 	 */
-	void setFormat(const char* newFormat);
+	void setFormat(const std::string& newFormat);
 	/**
 	 * Set one or more lines to be printed at the beginning of the file.
 	 *
 	 * This is ignored in binary mode.
 	 */
-	void setHeader(const char* newHeader);
+	void setHeader(const std::string& newHeader);
 	/**
 	 * Set one or more lines to be printed at the end of the file.
 	 *
 	 * This is ignored in binary mode.
 	 */
-	void setFooter(const char* newFooter);
+	void setFooter(const std::string& newFooter);
 
 	/**
 	 * Log one value to the file.
@@ -129,8 +121,14 @@ public:
 	 * If `overwrite` is false, existing files will not be overwritten
 	 * and the filename will be automatically incremented.
 	 */
-	void setup(const char* filename, bool overwrite = false, bool append = false);
+	void setup(const std::string& filename, bool overwrite = false, bool append = false);
 
+	/**
+	 * Get the name of the file being written. This may be different from
+	 * the filename passed to setup() if it was called with `overwrite =
+	 * false`.
+	 */
+	const std::string& getName() { return filename; }
 	/**
 	 * Gets the distance between the write and read pointers of
 	 * the buffer that holds data to be written to disk.
@@ -144,15 +142,23 @@ public:
 	 * and 1 being buffer empty (writing to disk is fast enough).
 	 */
 	float getBufferStatus();
-	void cleanup();
+	/**
+	 * Request that all of the data logged so far is flushed to disk.
+	 */
+	void requestFlush();
+	/**
+	 * Stop the logging, flush to disk and remove the file from the writing
+	 * thread. After this, you need a new call to setup().
+	 *
+	 * @param discard Whether to delete the file after closing it.
+	 */
+	void cleanup(bool discard = false);
 	~WriteFile();
 	static int getNumInstances();
-	static void writeAllHeaders();
-	static void writeAllFooters();
 	static void writeAllOutputs(bool flush);
 	static void startThread();
 	static void stopThread();
-	static void run(void*);
+	static void run();
 	/**
 	 * Returns a unique filename by appending a number at the end of the original
 	 * filename.
@@ -160,7 +166,7 @@ public:
 	 * @return a pointer to the unique filename. This MUST be freed by the
 	 * invoking function.
 	 */
-	static char* generateUniqueFilename(const char* original);
+	static std::string generateUniqueFilename(const std::string& original);
 };
 
 #endif /* WRITEFILE_H_ */

@@ -22,15 +22,15 @@ enum {
 	OPT_HIGH_PERFORMANCE_MODE,
 	OPT_BOARD,
 	OPT_CODEC_MODE,
+	OPT_DISABLED_DIGITAL_CHANNELS,
 };
 
-extern const float BELA_INVALID_GAIN = 99999999999;
+extern const float BELA_INVALID_GAIN = 999999;
 
 // whether it's the first time that Bela_getopt_long is run
 static bool gFirstRun = 1;
 
-static bool parseAdcLevels(const char* arg, BelaInitSettings* settings);
-static bool parseDacLevels(const char* arg, BelaInitSettings* settings);
+static bool parseLineOutLevels(const char* arg, BelaInitSettings* settings);
 static bool parseAudioInputGains(const char *arg, BelaInitSettings *settings);
 static bool parseHeadphoneLevels(const char *arg, BelaInitSettings *settings);
 static bool parseAudioExpanderChannels(const char *arg, bool inputChannel, BelaInitSettings *settings);
@@ -45,7 +45,7 @@ struct option gDefaultLongOptions[] =
 	{"analog-channels", 1, NULL, 'C'},
 	{"digital-channels", 1, NULL, 'B'},
 	{"mute-speaker", 1, NULL, 'M'},
-	{"dac-level", 1, NULL, 'D'},
+	{"line-out-level", 1, NULL, 'D'},
 	{"adc-level", 1, NULL, 'A'},
 	{"pga-gain-left", 1, NULL, OPT_PGA_GAIN_LEFT},
 	{"pga-gain-right", 1, NULL, OPT_PGA_GAIN_RIGHT},
@@ -63,14 +63,15 @@ struct option gDefaultLongOptions[] =
 	{"uniform-sample-rate", 0, NULL, OPT_UNIFORM_SAMPLE_RATE},
 	{"board", 1, NULL, OPT_BOARD},
 	{"codec-mode", 1, NULL, OPT_CODEC_MODE},
+	{"disabled-digital-channels", 1, NULL, OPT_DISABLED_DIGITAL_CHANNELS},
 	{NULL, 0, NULL, 0}
 };
 
 const char gDefaultShortOptions[] = "p:vN:M:C:D:A:I:H:G:B:X:Y:Z:";
 
-static void deprecatedWarning(const char* call, const char* newOne)
+static void deprecatedWarning(const char* call, const char* newOne, bool ignored = false)
 {
-	std::cerr << "Warning: " << call << " is deprecated. Use " << newOne << " instead\n";
+	std::cerr << "Warning: " << call << " is deprecated" << (ignored ? " and IGNORED" : "") << ". Use " << newOne << " instead\n";
 }
 
 BelaInitSettings* Bela_InitSettings_alloc()
@@ -108,8 +109,7 @@ void Bela_defaultSettings(BelaInitSettings *settings)
 	settings->headphoneLevel = BELA_INVALID_GAIN;
 	parseAudioInputGains("", settings);
 	parseHeadphoneLevels("", settings);
-	parseAdcLevels("", settings);
-	parseDacLevels("", settings);
+	parseLineOutLevels("", settings);
 	settings->numMuxChannels = 0;
 	settings->audioExpanderInputs = 0;
 	settings->audioExpanderOutputs = 0;
@@ -291,10 +291,10 @@ int Bela_getopt_long(int argc, char * const argv[], const char *customShortOptio
 			settings->beginMuted = atoi(optarg);
 			break;
 		case 'D':
-			parseDacLevels(optarg, settings);
+			parseLineOutLevels(optarg, settings);
 			break;
 		case 'A':
-			parseAdcLevels(optarg, settings);
+			deprecatedWarning("-A/--adc-level", "--audio-input-gain", true);
 			break;
 		case 'H':
 			if(!parseHeadphoneLevels(optarg, settings))
@@ -353,6 +353,16 @@ int Bela_getopt_long(int argc, char * const argv[], const char *customShortOptio
 		case OPT_CODEC_MODE:
 			settings->codecMode = strdup(optarg);
 			break;
+		case OPT_DISABLED_DIGITAL_CHANNELS:
+		{
+			uint32_t val = strtol(optarg, NULL, 10);
+			if(val == 0) // try again, this time in hex
+				val = strtol(optarg, NULL, 16);
+			if(0 == val)
+				fprintf(stderr, "--disabled-digital-channels was passed 0 as an argument (or the argument was not parsed properly)\n");
+			settings->disabledDigitalChannels = val;
+		}
+			break;
 		case '?':
 		default:
 			return c;
@@ -365,8 +375,8 @@ int Bela_getopt_long(int argc, char * const argv[], const char *customShortOptio
 void Bela_usage()
 {
 	std::cerr << "   --period [-p] period:               Set the hardware period (buffer) size in audio samples\n";
-	std::cerr << "   --dac-level [-D] dBs: changains     Set the DAC output level (0dB max; -63.5dB min)\n";
-	std::cerr << "   --adc-level [-A] dBs: changains     Set the ADC input level (0dB max; -12dB min)\n";
+	std::cerr << "   --line-out-level [-D] dBs: changains Set the line output level\n";
+	std::cerr << "   --adc-level [-A] dBs: changains     Set the ADC input level (0dB max; -12dB min). DEPRECATED: use --audio-input-gain instead\n";
 	std::cerr << "   --pga-gain-left dBs:                Set the Programmable Gain Amplifier for the left audio channel (0dBmin; 59.5dB max; default: " << DEFAULT_PGA_GAIN << " dB). DEPRECATED: use --audio-input-gain instead\n";
 	std::cerr << "   --pga-gain-right dBs:               Set the Programmable Gain Amplifier for the right audio channel (0dBmin; 59.5dB max; default:" << DEFAULT_PGA_GAIN << " dB). DEPRECATED: Use --audio-input-gain instead\n";
 	std::cerr << "   --audio-input-gain [-I] changains:  Set the gain for the specified audio input channels (gain: 0dB min; 59.5dB max); default: " << DEFAULT_PGA_GAIN << " dB)\n";
@@ -383,7 +393,7 @@ void Bela_usage()
 	std::cerr << "   --audio-expander-inputs [-Y] vals:  Set the analog inputs to use with audio expander (comma-separated list)\n";
 	std::cerr << "   --audio-expander-outputs [-Z] vals: Set the analog outputs to use with audio expander (comma-separated list)\n";
 	std::cerr << "   --pru-file val:                     Set an optional external file to use for the PRU binary code\n";
-	std::cerr << "   --pru-number val:                   Set the PRU to use for I/O (options: 0 or 1, default: 0)\n";
+	std::cerr << "   --pru-number val:                   Set the PRU to use for I/O (options: 0 or 1, default: 1)\n";
 	std::cerr << "   --detect-underruns val:             Set whether to warn the user in case of underruns (options: 0 or 1, default: 1)\n";
 	std::cerr << "   --disable-led                       Disable the blinking LED indicator\n";
 	std::cerr << "   --stop-button-pin                   What pin to monitor for stopping the program. Pass -1 to disable button monitoring\n";
@@ -391,6 +401,7 @@ void Bela_usage()
 	std::cerr << "   --uniform-sample-rate               Internally resample the analog channels so that they match the audio sample rate\n";
 	std::cerr << "   --board val:                        Select a different board to work with\n";
 	std::cerr << "   --codec-mode val:                   A codec-specific string representing an intialisation parameter\n";
+	std::cerr << "   --disabled-digital-channels val:    A bitmask to disable specific digital channels\n";
 	std::cerr << "   --verbose [-v]:                     Enable verbose logging information\n";
 	std::cerr << " `changains` must be one or more `channel,gain` pairs. A negative channel number means all channels. A single value is interpreted as gain, with channel=-1\n";
 }
@@ -460,16 +471,10 @@ static bool parseChannelGainPairs(BelaChannelGainArray& cga, std::vector<BelaCha
 	return true;
 }
 
-static bool parseAdcLevels(const char* arg, BelaInitSettings* settings)
+static bool parseLineOutLevels(const char* arg, BelaInitSettings* settings)
 {
-	static std::vector<BelaChannelGain> cg = {{ .channel = -1, .gain = DEFAULT_ADC_LEVEL, }};
-	return parseChannelGainPairs(settings->adcGains, cg, arg);
-}
-
-static bool parseDacLevels(const char* arg, BelaInitSettings* settings)
-{
-	static std::vector<BelaChannelGain> cg = {{ .channel = -1, .gain = DEFAULT_DAC_LEVEL, }};
-	return parseChannelGainPairs(settings->dacGains, cg, arg);
+	static std::vector<BelaChannelGain> cg = {{ .channel = -1, .gain = DEFAULT_LINE_OUT_LEVEL, }};
+	return parseChannelGainPairs(settings->lineOutGains, cg, arg);
 }
 
 static bool parseHeadphoneLevels(const char* arg, BelaInitSettings* settings)

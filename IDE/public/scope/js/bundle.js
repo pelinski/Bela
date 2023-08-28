@@ -558,6 +558,7 @@ function ChannelConfig() {
   this.yOffset = 0;
   this.color = '0xff0000';
   this.lineWeight = 1.5;
+  this.enabled = 1;
 }
 
 var channelConfig = [new ChannelConfig()];
@@ -601,7 +602,17 @@ var ChannelView = function (_View) {
     value: function inputChanged($element, e) {
       var key = $element.data().key;
       var channel = $element.data().channel;
-      var value = key === 'color' ? $element.val().replace('#', '0x') : parseFloat($element.val());
+      var value = void 0;
+      switch (key) {
+        case 'color':
+          value = $element.val().replace('#', '0x');
+          break;
+        case 'enabled':
+          value = $element.prop('checked');
+          break;
+        default:
+          value = parseFloat($element.val());
+      }
       if (!(key === 'color') && isNaN(value)) return;
       if ("yAmplitude" === key || "yAmplitudeSlider" === key) {
         if ("yAmplitudeSlider" === key) {
@@ -706,7 +717,7 @@ var ChannelView = function (_View) {
           channelConfig.push(new ChannelConfig());
           channelConfig[channelConfig.length - 1].color = colours[(channelConfig.length - 1) % colours.length];
           var el = $('.channel-view-0').clone(true).prop('class', 'channel-view-' + channelConfig.length).appendTo($('.control-section.channel'));
-          el.find('h3').html('Channel ' + channelConfig.length);
+          el.find('[data-channel-name]').html('Channel ' + channelConfig.length);
           el.find('input').each(function () {
             $(this).data('channel', channelConfig.length - 1);
           });
@@ -1466,11 +1477,44 @@ controlView.on('settings-event', function (key, value) {
   settings.setKey(key, value);
 });
 
+var legend = {
+  update: function update(channelConfig) {
+    if (!this.panel) {
+      this.panel = $('<div data-legend-panel/>');
+      this.panel.appendTo('body');
+    }
+    this.panel.empty();
+    for (var n = 0; n < channelConfig.length; ++n) {
+      var channel = channelConfig[n];
+      var ch = $('<div></div>');
+      // channels are 1-based in the control panel, so we mirror it in the
+      // text here
+      var label = $('<div data-legend-color-label />').text(n + 1);
+      var box = $('<input>');
+      box.attr('type', 'checkbox');
+      box.attr('data-key', 'enabled');
+      box.attr('data-channel', n);
+      box.attr('data-legend-color-box', '');
+      if (channelConfig[n].enabled) {
+        box.attr('checked', 'checked');
+        box.css('background-color', channel.color.replace('0x', '#'));
+      }
+      ch.append(label).append(box);
+
+      $('input', ch).on('input', function (e) {
+        return channelView.inputChanged($(e.currentTarget), e);
+      });
+      this.panel.append(ch);
+    }
+  }
+};
+
 channelView.on('channelConfig', function (channelConfig) {
   worker.postMessage({
     event: 'channelConfig',
     channelConfig: channelConfig
   });
+  legend.update(channelConfig);
 });
 
 sliderView.on('slider-value', function (slider, value) {
@@ -1603,12 +1647,23 @@ function CPU(data) {
     if (plot) {
       plot = false;
       ctx.clear();
+      var minY = 0;
+      var maxY = renderer.height;
       for (var i = 0; i < numChannels; i++) {
+        if (!channelConfig[i].enabled) continue;
         ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, 1);
         var iLength = i * length;
-        ctx.moveTo(0, frame[iLength] + xOff * (frame[iLength + 1] - frame[iLength]));
+        var constrain = function constrain(v, min, max) {
+          if (v < min) return min;
+          if (v > max) return max;
+          return v;
+        };
+        var curr = constrain(frame[iLength], minY, maxY);
+        var next = constrain(frame[iLength + 1], minY, maxY);
+        ctx.moveTo(0, curr + xOff * (next - curr));
         for (var j = 1; j - xOff < length; j++) {
-          ctx.lineTo(j - xOff, frame[j + iLength]);
+          var _curr = constrain(frame[j + iLength], minY, maxY);
+          ctx.lineTo(j - xOff, _curr);
         }
       }
       renderer.render(stage);

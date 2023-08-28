@@ -6,7 +6,9 @@
 
 #include "../include/Spi_Codec.h"
 #include "../include/GPIOcontrol.h"
+#include "../include/MiscUtilities.h"
 
+static char mosiPin[] = "P8_33";
 const int RESET_PIN = 81; // GPIO2(17) P8.34
 
 #include <unistd.h>
@@ -52,6 +54,11 @@ Spi_Codec::Spi_Codec(const char* spidev_gpio_cs0, const char* spidev_gpio_cs1, b
 	// now we can detect if there is a slave codec
 	_isBeast = slaveIsDetected();
 	_dacVolumethreeEighthsDbs.resize(_isBeast ? 16 : 8);
+	// if BelaRevC is used in combination with CTAG, there is a pin conflict
+	// between MOSI and the McASP data line used by BelaRevC.
+	// We check here whether the pin's function can be set at runtime so
+	// that in that case we can set it before using it in writeRegister().
+	_shouldPinmux = (PinmuxUtils::get(mosiPin).size() > 0);
 }
 
 Spi_Codec::~Spi_Codec(){
@@ -61,6 +68,10 @@ Spi_Codec::~Spi_Codec(){
 }
 
 int Spi_Codec::writeRegister(unsigned char reg, unsigned char value, CODEC_TYPE codec){
+	// this may have been changed externally. We could be marginally faster
+	// by caching its current state and avoid writing to it repeatedly.
+	if(_shouldPinmux)
+		PinmuxUtils::set(mosiPin, "gpio");
 	int fd;
 
 	unsigned char tx[3], rx[3];
@@ -181,9 +192,28 @@ int Spi_Codec::initCodec(){
 	return 0;
 }
 
-int Spi_Codec::startAudio(int dummy_parameter){
+int Spi_Codec::startAudio(int shouldBeReady){
 	// Enable PLL
-	return writeRegister(REG_PLL_CLK_CONTROL_0, 0x9C);
+	if(writeRegister(REG_PLL_CLK_CONTROL_0, 0x9C))
+		return 1;
+	// when combined with Bela cape rev C, we need to enable the
+	// ADC by toggling its reset pin. As this pin (P8.32) is already reserved
+	// by us as part of the SPI GPIO device, we can set it here regardless
+	// of the actual board we are running on.
+	const size_t kAds816xReset = 11;
+	if(gpio_export(kAds816xReset))
+		return 1;
+	if(gpio_set_dir(kAds816xReset, OUTPUT_PIN))
+		return 1;
+	if(gpio_set_value(kAds816xReset, LOW))
+		return 1;
+	usleep(1000);
+	if(gpio_set_value(kAds816xReset, HIGH))
+		return 1;
+	// ADS8166 datasheet 6.7 Switching characteristics
+	// Delay time: RST rising to READY rising is 4ms MAX
+	usleep(4000);
+	return 0;
 }
 
 int Spi_Codec::stopAudio(){
@@ -191,7 +221,7 @@ int Spi_Codec::stopAudio(){
 	return writeRegister(REG_PLL_CLK_CONTROL_0, 0x9D);
 }
 
-int Spi_Codec::setDacVolume(const int channel, float gain) {
+int Spi_Codec::setLineOutVolume(const int channel, float gain) {
 	if(channel >= int(_dacVolumethreeEighthsDbs.size()))
 		return 1;
 	// Calculcate volume from gain dB in 3/8 dB steps und cast to int
@@ -359,6 +389,7 @@ McaspConfig& Spi_Codec::getMcaspConfig() {
         mcaspConfig.params.bitDelay = 1;
         mcaspConfig.params.ahclkIsInternal = true; // ignored in practice
         mcaspConfig.params.ahclkFreq = 12000000; // ignored in practice
+        mcaspConfig.params.aclkIsInternal = false;
         mcaspConfig.params.wclkIsInternal = false;
         mcaspConfig.params.wclkIsWord = true;
         mcaspConfig.params.wclkFalling = false;

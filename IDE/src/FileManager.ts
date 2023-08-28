@@ -148,7 +148,7 @@ export async function delete_file(file_path: string): Promise<void>{
 export async function read_subfolders(dir_path: string) {
 	await lock.acquire();
 	return new Promise( (resolve, reject) => {
-		child_process.exec('find . -type d -maxdepth 1', { cwd: dir_path }, (error : Error, stdout : string, stderr : string) => {
+		child_process.exec('find -L . -maxdepth 1 -type d', { cwd: dir_path }, (error : Error, stdout : string, stderr : string) => {
 			lock.release();
 			if (error) {
 				console.error(`exec error: ${error}`);
@@ -170,7 +170,7 @@ export async function read_directory(dir_path: string): Promise<string[]>{
 		out.sort(function(a, b) {
 			return a.toLowerCase().localeCompare(b.toLowerCase());
 		});
-	}
+	} catch (e) { }
 	finally{
 		lock.release();
 	}
@@ -235,20 +235,33 @@ export async function deep_read_directory(dir_path: string): Promise<util.File_D
 	for (let name of contents){
 		const original_path = dir_path+'/'+name;
 		let path = original_path;
-		let stat = await stat_file(path);
+		let shouldContinue = false;
+		let errorCatcher = (e: Error) => {
+			// this may have been a temp file which by now has disappeared
+			console.log("File " + path + " may have disappeared");
+			shouldContinue = true;
+			return "";
+		}
+		let stat = await stat_file(path).catch(errorCatcher);
+		if(shouldContinue)
+			continue;
 		// follow symlinks (with a maximum limit)
 		const maxLevels = 100;
 		let levels = 0;
 		while(stat.isSymbolicLink()) {
-			path = await fs.readlinkAsync(path);
+			path = await fs.readlinkAsync(path).catch(errorCatcher);
 			if('/' != path[0])
 				path = dir_path+'/'+path;
-			stat = await stat_file(path);
+			stat = await stat_file(path).catch(errorCatcher);
+			if(shouldContinue)
+				break;
 			++levels;
 			if(maxLevels <= levels) {
 				break;
 			}
 		}
+		if(shouldContinue)
+			continue;
 		if(maxLevels <= levels) {
 			console.error('Unable to properly stat %s: too many symlinks to follow(%d)', original_path, levels);
 			path = original_path;

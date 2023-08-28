@@ -37,7 +37,7 @@ public:
 	int initCodec();
 	int setParameters(const AudioCodecParams& codecParams);
 	AudioCodecParams getParameters();
-	int startAudio(int dummy);
+	int startAudio(int shouldBeReady);
 	int stopAudio();
 	unsigned int getNumIns();
 	unsigned int getNumOuts();
@@ -48,6 +48,7 @@ public:
 	int setPllP(short unsigned int p);
 	int setPllR(unsigned int r);
 	int setPllK(float k);
+	int setNcodec(double NCODEC);
 	int setAudioSamplingRate(float newSamplingRate);
 	short unsigned int getPllJ();
 	unsigned int getPllD();
@@ -57,14 +58,13 @@ public:
 	float getAudioSamplingRate();
 	int setInputGain(int channel, float gain);
 	int setDacVolume(int channel, float gain);
-	int setAdcVolume(int channel, float gain);
 	int setHpVolume(int channel, float gain);
+	int setLineOutVolume(int channel, float gain);
 	int enableHpOut(bool enable);
 	int enableLineOut(bool enable);
 	int disable();
 	int reset(){ return 0; } // Not needed for audio codec on Bela cape
 
-	int readI2C();
 	void setVerbose(bool isVerbose);
 
 	I2c_Codec(int i2cBus, int I2cAddress, CodecType type, float samplingRate = 44100.0, float samplingRatePrescaler = 1.0, bool verbose = false);
@@ -76,19 +76,26 @@ private:
 	enum {kNumIoChannels = 2};
 	int writeDacVolumeRegisters(bool mute);
 	int writeAdcVolumeRegisters(bool mute);
+	int writeOutputLevelControlReg(std::array<unsigned char,kNumIoChannels> const & regs, std::array<float,kNumIoChannels> const & volumes, unsigned char lowerHalf);
+	int writeRoutingVolumeControlReg(std::array<unsigned char,kNumIoChannels> const & regs, std::array<float,kNumIoChannels>const & volumes, bool enabled);
 	int writeHPVolumeRegisters();
+	int writeLineOutVolumeRegisters();
 protected:
 	int configureDCRemovalIIR(bool enable); //called by startAudio()
 	int codecType;
 	std::array<int,kNumIoChannels> dacVolumeHalfDbs{};
-	std::array<int,kNumIoChannels> adcVolumeHalfDbs{};
-	std::array<int,kNumIoChannels> hpVolumeHalfDbs{};
+	std::array<float,kNumIoChannels> inputGain{};
+	std::array<float,kNumIoChannels> hpVolume{};
+	std::array<float,kNumIoChannels> lineOutVolume{};
 	AudioCodecParams params;
 	McaspConfig mcaspConfig;
 	bool running;
 	bool verbose;
-	bool hpEnabled;
+	bool hpEnabled = true;
+	bool lineOutEnabled = true;
 	bool differentialInput;
+	bool unmutedPowerStage;
+	double micBias;
 	typedef enum
 	{
 		InitMode_init = 0,

@@ -3,13 +3,14 @@
 #include <vector>
 #include <string>
 #include <functional>
-#include <WSServer.h>
 #include <JSON.h>
 #include <typeinfo> // for types in templates
+#include <memory>
 #include <DataBuffer.h>
+#include <set>
+#include "libraries/WSServer/WSServer.h"
 
 // forward declarations
-class WSServer;
 
 class Gui
 {
@@ -17,13 +18,12 @@ class Gui
 
 		std::vector<DataBuffer> _buffers;
 		std::unique_ptr<WSServer> ws_server;
+		std::set<const WSServerDetails*> wsConnections;
 
-		bool wsIsConnected = false;
-
-		void ws_connect();
-		void ws_disconnect();
-		void ws_onControlData(const char* data, unsigned int size);
-		void ws_onData(const char* data, unsigned int size);
+		void ws_connect(const std::string& address, const WSServerDetails* id);
+		void ws_disconnect(const std::string& address, const WSServerDetails* id);
+		void ws_onControlData(const std::string& address, const WSServerDetails* id, const unsigned char* data, size_t size);
+		void ws_onData(const std::string& address, const WSServerDetails* id, const unsigned char* data, size_t size);
 		int doSendBuffer(const char* type, unsigned int bufferId, const void* data, size_t size);
 
 		unsigned int _port;
@@ -33,10 +33,10 @@ class Gui
 
 		// User defined functions
 		std::function<bool(JSONObject&, void*)> customOnControlData;
-		std::function<bool(const char*, unsigned int, void*)> customOnData;
+		std::function<bool(const std::string&, const WSServerDetails*, const unsigned char*, size_t, void*)> customOnData;
 
-		void* userControlData = nullptr;
-		void* userBinaryData = nullptr;
+		void* controlCallbackArg = nullptr;
+		void* binaryCallbackArg = nullptr;
 
 	public:
 		Gui();
@@ -55,7 +55,7 @@ class Gui
 		int setup(std::string projectName, unsigned int port = 5555, std::string address = "gui");
 		void cleanup();
 
-		bool isConnected(){ return wsIsConnected; };
+		size_t numConnections(){ return wsConnections.size(); };
 
 		// BUFFERS
 		/**
@@ -84,36 +84,43 @@ class Gui
 		 *
 		 * @param callback the function to be called upon receiving data on the
 		 * control WebSocket
-		 * @param customBinaryData an opaque pointer that will be passed to the
+		 * @param callbackArg an opaque pointer that will be passed to the
 		 * callback
 		 **/
-		void setControlDataCallback(std::function<bool(JSONObject&, void*)> callback, void* customControlData=nullptr){
+		void setControlDataCallback(std::function<bool(JSONObject&, void*)> callback, void* callbackArg=nullptr){
 			customOnControlData = callback;
-			userControlData = customControlData;
+			controlCallbackArg = callbackArg;
 		};
 
 		/**
 		 * Set callback to parse binary data received from the client.
 		 *
-		 * @param callback Callback to be called whenever new control
+		 * @param callback Callback to be called whenever new binary
 		 * data is received.
 		 * It takes a byte buffer, the size of the buffer and a pointer
 		 * as parameters, returns `true `if the default callback should
 		 * be called afterward or `false` otherwise. The first two
-		 * parameters are used for the data received on the web-socket.
-		 * The third parameter is a user-defined opaque pointer
+		 * parameters to the callback are a pointer to and the size of the
+		 * data received on the web-socket. The third parameter is a
+		 * user-defined opaque pointer.
 		 *
-		 * @param customBinaryData: Pointer to be passed to the
+		 * @param callbackArg: Pointer to be passed to the
 		 * callback.
 		 **/
-		void setBinaryDataCallback(std::function<bool(const char*, unsigned int, void*)> callback, void* customBinaryData=nullptr){
+		void setBinaryDataCallback(std::function<bool(const std::string&, const WSServerDetails* id, const unsigned char*, size_t, void*)> callback, void* callbackArg=nullptr){
 			customOnData = callback;
-			userBinaryData = customBinaryData;
+			binaryCallbackArg = callbackArg;
 		};
 		/** Sends a JSON value to the control websocket.
+		 *
+		 * @param root the JSONValue to send
+		 * @param callingThread set this to WSServer::ThreadCallback if
+		 * you are calling this method from the same thread that called
+		 * the control or data callback in order to save a memory
+		 * allocation and copy. Otherwise, leave it at its default value.
 		 * @returns 0 on success, or an error code otherwise.
 		 * */
-		int sendControl(JSONValue* root);
+		int sendControl(const JSONValue* root, WSServer::CallingThread callingThread = WSServer::kThreadOther);
 
 		/**
 		 * Sends a buffer (a vector) through the web-socket to the client with a given ID.

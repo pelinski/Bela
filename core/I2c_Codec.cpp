@@ -30,6 +30,8 @@ I2c_Codec::I2c_Codec(int i2cBus, int i2cAddress, CodecType type, float samplingR
 	, running(false)
 	, verbose(isVerbose)
 	, differentialInput(false)
+	, unmutedPowerStage(false)
+	, micBias(2.5)
 	, mode(InitMode_init)
 {
 	params.slotSize = 16;
@@ -65,8 +67,9 @@ int I2c_Codec::initCodec()
 
 // Tell the codec to start generating audio
 // See the TLV320AIC3106 datasheet for full details of the registers
-int I2c_Codec::startAudio(int dummy)
+int I2c_Codec::startAudio(int shouldBeReady)
 {
+	Mcasp::startAhclkx();
 	if(verbose)
 		getParameters().print();
 	// setting forceEnablePll = false will attempt (and probably fail) to use clock
@@ -99,22 +102,14 @@ int I2c_Codec::startAudio(int dummy)
 
 	if(writeRegister(0x0D, 0x00))	// Headset / button press register A: disabled
 		return 1;
-	if(writeRegister(0x0E, 0x00))	// Headset / button press register B: disabled
+	if(writeRegister(0x0E, 0x80))	// Headset / button press register B:: Programs high-power outputs for ac-coupled driver configuration
 		return 1;
 	if(writeRegister(0x25, 0xC0))	// DAC power/driver register: DAC power on (left and right)
 		return 1;
 	if(writeRegister(0x26, 0x04))	// High power output driver register: Enable short circuit protection
 		return 1;
-	if(writeRegister(0x28, 0x02))	// High power output stage register: disable soft stepping
+	if(writeRegister(0x28, 0x02))	// High power output stage register: output soft-stepping disabled. Note: when enabling soft stepping it seems to take much longer than the datasheet would suggest, to the point that it's annoying on startup.
 		return 1;
-
-	if(writeRegister(0x52, 0x80))	// DAC_L1 to LEFT_LOP volume control: routed, volume 0dB
-		return 1;
-	if(writeRegister(0x5C, 0x80))	// DAC_R1 to RIGHT_LOP volume control: routed, volume 0dB
-		return 1;
-	if(writeHPVolumeRegisters())	// Send DAC to high-power outputs
-		return 1;
-
 
 	if(InitMode_noInit != mode) {
 		// see datasehet for TLV320AIC3104 from page 44
@@ -140,6 +135,13 @@ int I2c_Codec::startAudio(int dummy)
 			// which can be obtained in a variety of manners from an external clock signal applied to the device.
 			// ....
 			// when the PLL is disabled, fs(ref) = CLKDIV_IN / (128 * Q)
+			//
+
+			// TODO: what should we do when receiving an external bit clock that is outside the 39kHz to 53kHz for fs(ref)?
+			// can we set NCODEC to anything else than 1?
+			if(params.samplingRate < 39000 || params.samplingRate > 53000)
+				fprintf(stderr, "Using out of range sampling rate. It is not guaranteed to work as expected\n");
+			setNcodec(1);
 
 			unsigned int numSlots = mcaspConfig.params.numSlots;
 			unsigned int Q = (params.slotSize * numSlots) / 128;
@@ -244,17 +246,13 @@ int I2c_Codec::startAudio(int dummy)
 	} // if not noInit
 	
 	bool dcRemoval;
-	double micBias;
 	if(!differentialInput) {
 		//Set-up hardware high-pass filter for DC removal
 		dcRemoval = true;
-		micBias = 2.5;
 	}
 	else {
 		// Disable DC blocking for differential analog inputs
 		dcRemoval = false;
-		// mini string preamp uses micBias for virtual ground reference
-		micBias = 2;
 	}
 
 	if(configureDCRemovalIIR(dcRemoval))
@@ -275,24 +273,50 @@ int I2c_Codec::startAudio(int dummy)
 	// TODO: may need to separate the code below for non-master codecs so they enable amps after the master clock starts
 
 	// wait for the codec to stabilize before unmuting the HP amp.
-	// this gets rid of the loud pop.
+	// this gets rid of the loud pop, but it only makes sense if the mclk
+	// has been already enabled
 	if(kClockSourceCodec == params.bclk)
 		usleep(10000);
 
-	// note : a small click persists, but it is unavoidable
-	// (i.e.: fading in the hpVolumeHalfDbs after it is turned on does not remove it).
-
-	if(writeRegister(0x33, 0x0D))	// HPLOUT output level control: output level = 0dB, not muted, powered up
+	// note : a small click persists, but we don't seem to manage to avoid it
+	if(writeHPVolumeRegisters())	// Send DAC to high-power outputs
 		return 1;
-	if(writeRegister(0x41, 0x0D))	// HPROUT output level control: output level = 0dB, not muted, powered up
+	if(writeLineOutVolumeRegisters())
 		return 1;
-	enableLineOut(true);
 	if(writeDacVolumeRegisters(false))	// Unmute and set volume
 		return 1;
 
 	if(writeAdcVolumeRegisters(false))	// Unmute and set ADC volume
 		return 1;
 
+	if(shouldBeReady)
+	{
+		// let's not continue till the output is actually ready
+		// before we start rendering audio
+		bool ready = false;
+		for(unsigned int n = 0; n < 50; ++n)
+		{
+			int reg = 0x41; // HPROUT output level control register
+			int ret = readRegister(reg);
+			if(ret < 0)
+				return -1;
+			const int mask = 0b1011; // unmuted, all gains applied, fully powered up
+			if((ret & mask) != mask)
+			{
+				usleep(10000);
+				verbose && fprintf(stderr, "Polling for unmute: %x\n", ret & mask);
+			}
+			else {
+				ready = true;
+				break;
+			}
+		}
+		if(!ready)
+		{
+			fprintf(stderr, "Codec did not unmute\n");
+			return -1;
+		}
+	}
 	running = true;
 	return 0;
 }
@@ -467,8 +491,38 @@ struct PllSettings {
 	unsigned int P;
 	unsigned int R;
 	double K;
+	double NCODEC;
 	double Fs;
 };
+
+int I2c_Codec::setNcodec(double NCODEC)
+{
+	uint8_t prescalerReg = 0x0F & ( (int)(NCODEC * 2 - 2) );
+	prescalerReg = prescalerReg | ( prescalerReg << 4); // it has to be NCODEC = NADC = NDAC
+	return writeRegister(0x02, prescalerReg);
+}
+
+// the Fs_ref sampling frequency used internally has to be in the 39kHz
+// to 53khz range.
+// To achieve ADC/DAC frequencies lower than that, one has to divide it
+// down using the "Codec Sample Rate Select Register" (10.3.3 of the
+// 3104 datasheet). This divider (NCODEC) can be between 1 and 6 in
+// steps of 0.5.
+static int computeNcodec(float desiredSamplingRate, float& fs_ref, double& NCODEC)
+{
+	unsigned int TWICE_NCODEC = 2;
+	// if the sampling rate is below 39 kHz, try to bring it back in range
+	while(desiredSamplingRate * (0.5 * TWICE_NCODEC) <= 39000 && TWICE_NCODEC <= 12)
+		TWICE_NCODEC++;
+	NCODEC = TWICE_NCODEC / 2.0;
+	fs_ref = desiredSamplingRate * NCODEC;
+	if(TWICE_NCODEC > 12 || fs_ref > 53000 || fs_ref < 39000)
+	{
+		// we cannot achieve such sampling rate
+		return 1;
+	}
+	return 0;
+}
 
 static std::vector<PllSettings> findSettingsWithConstraints(
 		unsigned int Rmin, unsigned int Rmax,
@@ -487,6 +541,13 @@ static std::vector<PllSettings> findSettingsWithConstraints(
 		++Pmin;
 	while(PLLCLK_IN / Pmax < ratioMin*MHz && Pmin <= Pmax)
 		--Pmax;
+	double NCODEC;
+	float fs_ref;
+	int ret = computeNcodec(newSamplingRate, fs_ref, NCODEC);
+	if(ret)
+		return {};
+	newSamplingRate = fs_ref;
+
 	for(unsigned int R = Rmin; R <= Rmax; ++R)
 	{
 		for(unsigned int P = Pmin; P <= Pmax; ++P)
@@ -513,8 +574,8 @@ static std::vector<PllSettings> findSettingsWithConstraints(
 					K = ((unsigned int)(K * 10000 + 0.5)) / 10000.0;
 				if(K >= localKmin && K <= localKmax)
 				{
-					double Fs = (PLLCLK_IN * K * R)/(2048 * P);
-					settings.push_back({.P = P, .R = R, .K = K, .Fs = Fs});
+					double Fs = (PLLCLK_IN * K * R)/(2048 * P) / NCODEC;
+					settings.push_back({.P = P, .R = R, .K = K, .NCODEC = NCODEC, .Fs = Fs});
 				}
 			}
 		}
@@ -584,11 +645,13 @@ int I2c_Codec::setAudioSamplingRate(float newSamplingRate){
 		return 1;
 	if((setPllK(optimalSettings.K)))
 		return 1;
+	if(setNcodec(optimalSettings.NCODEC))
+		return 1;
 	PllSettings& s = optimalSettings;
 	if(verbose)
-		printf("MCLK: %.4f MHz, fs(ref): %.4f, P: %u, R: %u, J: %d, D: %d, Achieved Fs: %f (err: %.4f%%), \n",
+		printf("MCLK: %.4f MHz, fs(ref): %.4f, P: %u, R: %u, J: %d, D: %d, NCODEC: %f, Achieved Fs: %f (err: %.4f%%), \n",
 			PLLCLK_IN / 1000000, newSamplingRate,
-			pllP, pllR, pllJ, pllD,
+			pllP, pllR, pllJ, pllD, s.NCODEC,
 			s.Fs, (s.Fs - newSamplingRate) / newSamplingRate * 100
 		);
 	return 0;
@@ -619,29 +682,53 @@ float I2c_Codec::getAudioSamplingRate(){
 	return fs;
 }
 
+static int getHalfDbs(float gain)
+{
+	return floorf(gain * 2.0 + 0.5);
+}
+
 int I2c_Codec::setInputGain(int channel, float gain){
 	const uint8_t regLeft = 0x0F;
 	const uint8_t regRight = 0x10;
 	std::vector<uint8_t> regs;
 	if(0 == channel)
+	{
 		regs = {regLeft};
+		inputGain[0] = gain;
+	}
 	else if(1 == channel)
+	{
 		regs = {regRight};
+		inputGain[1] = gain;
+	}
 	else if(channel < 0)
+	{
 		regs = {{regLeft, regRight}}; // both channels
-	if(gain > 59.5)
-		return 2; // error, gain out of range
-	unsigned short int value;
-	if(gain < 0)
-		value = 0b10000000; // PGA is muted
-	else {
-		// gain is adjustable from 0 to 59.5dB in steps of 0.5dB between 0x0 and 0x7f.
-		// Values between 0b01110111 and 0b01111111 are clipped to 59.5dB
-		value = (int)(gain * 2 + 0.5) & 0x7f;
+		inputGain[0] = inputGain[1] = gain;
+	}
+	unsigned short int pgaByte;
+	if(gain <= -96) {
+		// we consider this a mute. The "-96" threshold is pretty
+		// arbitrary, not related to the codec
+		pgaByte = 0b10000000; // PGA is muted
+	} else {
+		if(gain < 0) {
+			// PGA at 0dB, further attenuation provided by the "ADC volume"
+			gain = 0;
+		}
+		// gain is adjustable from 0 to 59.5dB in steps of 0.5dB
+		// between 0x0 and 0x7f.
+		if(gain > 59.5)
+			gain = 59.5; // can't do more than this
+		// Values between 0b01110111 and 0b01111111 are clipped
+		// to 59.5dB
+		pgaByte = (int)(getHalfDbs(gain)) & 0x7f;
 	}
 	int ret = 0;
 	for(auto& reg : regs)
-		ret |=  writeRegister(reg, value);
+		ret |=  writeRegister(reg, pgaByte);
+	if(writeAdcVolumeRegisters(false)) // set "ADC volume"
+		return 1;
 	return ret;
 }
 
@@ -662,11 +749,6 @@ static int setByChannel(T& dest, const int channel, U val)
 	return 0;
 }
 
-static int getHalfDbs(float gain)
-{
-	return floorf(gain * 2.0 + 0.5);
-}
-
 // Set the volume of the DAC output
 int I2c_Codec::setDacVolume(int channel, float gain)
 {
@@ -674,16 +756,6 @@ int I2c_Codec::setDacVolume(int channel, float gain)
 		return 1;
 	if(running)
 		return writeDacVolumeRegisters(false);
-	return 0;
-}
-
-// Set the volume of the ADC input
-int I2c_Codec::setAdcVolume(int channel, float gain)
-{
-	if(setByChannel(adcVolumeHalfDbs, channel, getHalfDbs(gain)))
-		return 1;
-	if(running)
-		return writeAdcVolumeRegisters(false);
 	return 0;
 }
 
@@ -715,15 +787,15 @@ int I2c_Codec::writeDacVolumeRegisters(bool mute)
 int I2c_Codec::writeAdcVolumeRegisters(bool mute)
 {
 	std::array<int,kNumIoChannels> volumeBits{};
-	// Volume is specified in half-dBs with 0 as full scale
-	// The codec uses 1.5dB steps so we divide this number by 3
 	for(unsigned int n = 0; n < volumeBits.size(); ++n)
 	{
-		if(adcVolumeHalfDbs[n] < 0) {
-			volumeBits[n] = -adcVolumeHalfDbs[n] / 3;
-			if(volumeBits[n] > 8)
-				volumeBits[n] = 8;
-		}
+		// The codec uses 1.5dB steps from 0dB to -12dB
+		float gain = inputGain[n];
+		if(gain > 0)
+			gain = 0;
+		volumeBits[n] = -gain / 1.5;
+		if(volumeBits[n] > 8)
+			volumeBits[n] = 8;
 	}
 
 	if(mute) {
@@ -770,8 +842,7 @@ int I2c_Codec::writeAdcVolumeRegisters(bool mute)
 // Set the volume of the headphone output
 int I2c_Codec::setHpVolume(int channel, float gain)
 {
-	int hd = (int)floorf(gain * 2 + 0.5);
-	if(setByChannel(hpVolumeHalfDbs, channel, hd))
+	if(setByChannel(hpVolume, channel, gain))
 		return 1;
 	hpEnabled = true;
 	if(running)
@@ -788,46 +859,141 @@ int I2c_Codec::enableHpOut(bool enable)
 	return 0;
 }
 
-
-// Update the headphone volume control registers
-int I2c_Codec::writeHPVolumeRegisters()
+int I2c_Codec::writeOutputLevelControlReg(std::array<unsigned char,kNumIoChannels>const & regs, std::array<float,kNumIoChannels>const & volumes, unsigned char lowerHalf)
 {
-	std::array<uint8_t,kNumIoChannels> regs = {{
-		0x2F, // DAC_L1 to HPLOUT
-		0x40, // DAC_R1 to HPROUT
-	}};
-	for(unsigned int n = 0; n < hpVolumeHalfDbs.size(); ++n)
+	for(unsigned int c = 0; c < regs.size(); ++c)
 	{
+		// if olume is positive, we set the boost here
+		float vol = volumes[c];
+		if(vol < 0)
+			vol = 0;
+		if(vol > 9)
+			vol = 9;
+		// boost is 0dB to 9dB
+		uint8_t level = vol; // zxOUT Output level control = y dB
+		if(writeRegister(regs[c], (level << 4 ) | lowerHalf))
+			return 1;
+	}
+	return 0;
+}
+
+int I2c_Codec::writeRoutingVolumeControlReg(std::array<unsigned char,kNumIoChannels>const & regs, std::array<float,kNumIoChannels>const & volumes, bool enabled)
+{
+	for(unsigned int n = 0; n < volumes.size(); ++n)
+	{
+		float vol = volumes[n];
+		// if volume is negative, we set the attenuation here
+		if(vol > 0)
+			vol = 0;
+		// TODO: getHalfDbs() is not quite the correct function here
+		// See 3104/table 10-51 : gains will be off below -18dB
+		int hd = getHalfDbs(vol);
+		// Volume is specified in half-dBs attenuation
+		// with 0 as full scale
 		int volumeBits = 0;
-		int hd = hpVolumeHalfDbs[n];
-		if(hd < 0) { // Volume is specified in half-dBs with 0 as full scale
+		if(hd < 0) {
 			volumeBits = -hd;
 			if(volumeBits > 127)
 				volumeBits = 127;
 		}
-		uint8_t routed = hpEnabled << 7; // DAC_x routed to HPxOUT ?
+		uint8_t routed = enabled << 7; // DAC_x routed to xxOUT ?
 		if(writeRegister(regs[n], volumeBits | routed))
 			return 1;
 	}
 	return 0;
 }
 
+// Update the headphone volume control registers
+int I2c_Codec::writeHPVolumeRegisters()
+{
+	static const std::array<uint8_t,kNumIoChannels> regs = {{
+		0x2F, // DAC_L1 to HPLOUT
+		0x40, // DAC_R1 to HPROUT
+	}};
+	if(writeRoutingVolumeControlReg(regs, hpVolume, hpEnabled))
+		return 1;
+
+	// See section 3104/10.3.7 Analog High-Power Output Drivers
+	// As per https://e2e.ti.com/support/audio-group/audio/f/audio-forum/967397/tlv320aic3104-tlv320aic3104-pop-noise :
+	// First, configure the clocks/PLL/digital audio format. Once these are all configured, configure input/outputs:
+	// - For the outputs,  make sure that Soft-stepping is enabled, and if any BiQuads are being used, the filter coefficients should be programed before the DAC is powered.
+	// - Power up DACs but keep them muted, then power up output blocks (keeping them muted), once the output block is fully powered up, unmute the output block.
+	// - The HPOUTs have the option to weakly drive the outputs to the common mode voltage when powered down. in battery powered applications, this is not ideal,
+	// but for other applications this is a great way to reduce the any residual artifacts from the pop/click suppression.
+	// - Additionally, if the HPOUTs are AC coupled, make sure that P0, R14 Bit-D7 is set accordingly.
+
+	// NOTE: I cannot obtain/measure much effect from this after the capacitor with an unloaded output.
+	// However, when headphones are connected the pop is significantly reduced
+	// It seems that the write to 0x2A is the most significant in terms of reducing the pop the _first_ time the codec is started after a power up.
+	// With "Driver power-on time" < 200 ms we get more pop.
+	if(writeRegister(0x2A,
+		(0b0111 << 4) // Output Driver Pop Reduction Register: Driver power-on time = 200 ms
+		| (0b11 << 2) // Driver ramp-up step time = 4 ms
+		| (0b1 << 1) // Weakly driven output common-mode voltage is generated from band-gap reference
+	))
+		return 1;
+
+	unsigned int n = unmutedPowerStage ? 1 : 0;
+	for( ; n < 2; ++n)
+	{
+		// First time, power up while muted, then unmute and set gain.
+		// Successive times: unmute and set gain only.
+		bool unmute = n;
+		bool power = true;
+		uint8_t lowerHalf =
+			(unmute << 3)
+			| (0 << 2) // HPLOUT is weakly driven to a common-mode when powered down.
+			| (power << 0);
+		static const std::array<unsigned char,kNumIoChannels> regs = {{
+			0x33, // HPLOUT output level control register
+			0x41, // HPROUT output level control register
+		}};
+		if(writeOutputLevelControlReg(regs, hpVolume, lowerHalf))
+			return 1;
+	}
+	unmutedPowerStage = true;
+	return 0;
+}
+
+// Set the volume of the line output
+int I2c_Codec::setLineOutVolume(int channel, float gain)
+{
+	if(setByChannel(lineOutVolume, channel, gain))
+		return 1;
+	lineOutEnabled = true;
+	if(running)
+		return writeLineOutVolumeRegisters();
+
+	return 0;
+}
+
 int I2c_Codec::enableLineOut(bool enable)
 {
-	char value;
-	if(enable)
-	{
-		// output level control: 0dB, not muted, powered up
-		value = 0x09;
-	} else {
-		// output level control: muted
-		value = 0x08;
-	}
-	// LEFT_LOP
-	if(writeRegister(0x56, value))
+	lineOutEnabled = enable;
+	if(running)
+		return writeLineOutVolumeRegisters();
+	return 0;
+}
+
+int I2c_Codec::writeLineOutVolumeRegisters()
+{
+	static const std::array<unsigned char,kNumIoChannels> regs = {{
+		0x52, // DAC_L1 to LEFT_LOP volume control
+		0x5C, // DAC_R1 to RIGHT_LOP volume control
+	}};
+	if(writeRoutingVolumeControlReg(regs, lineOutVolume, lineOutEnabled))
 		return 1;
-	// RIGHT_LOP
-	if(writeRegister(0x5D, value))
+
+	bool power = true;
+	bool unmute = lineOutEnabled;
+	uint8_t lowerHalf =
+		(unmute << 3)
+		| (power << 0);
+	static const std::array<unsigned char,kNumIoChannels> regsl = {{
+		0x56, // LEFT_LOP/M Output Level Control Register
+		0x5D, // RIGHT_LOP/M Output Level Control Registe
+	}};
+	if(writeOutputLevelControlReg(regsl, lineOutVolume, lowerHalf))
 		return 1;
 	return 0;
 }
@@ -846,6 +1012,7 @@ int I2c_Codec::stopAudio()
 		return 1;
 	if(writeRegister(0x41, 0x0C))		// HPROUT output level register: muted
 		return 1;
+	unmutedPowerStage = false;
 	if(enableLineOut(false))
 		return 1;
 	if(InitMode_noInit != mode && InitMode_noDeinit != mode) {
@@ -938,13 +1105,6 @@ int I2c_Codec::disable(){
 	return 0;
 }
 
-
-int I2c_Codec::readI2C()
-{
-	// Nothing to do here, we only write the registers
-	return 0;
-}
-
 void I2c_Codec::setVerbose(bool isVerbose)
 {
 	verbose = isVerbose;
@@ -954,6 +1114,7 @@ I2c_Codec::~I2c_Codec()
 {
 	if(running)
 		stopAudio();
+	Mcasp::stopAhclkx();
 }
 
 McaspConfig& I2c_Codec::getMcaspConfig()
@@ -997,6 +1158,7 @@ McaspConfig& I2c_Codec::getMcaspConfig()
 	mcaspConfig.params.bitDelay = isI2s ? params.bitDelay + 1 : params.bitDelay;
 	mcaspConfig.params.ahclkIsInternal = true;
 	mcaspConfig.params.ahclkFreq = params.mclk;
+	mcaspConfig.params.aclkIsInternal = (kClockSourceMcasp == params.bclk);
 	mcaspConfig.params.wclkIsInternal = (kClockSourceMcasp == params.wclk);
 	mcaspConfig.params.wclkIsWord = isI2s;
 	mcaspConfig.params.wclkFalling = isI2s;
@@ -1071,6 +1233,12 @@ int I2c_Codec::setMode(std::string str)
 			differentialInput = true;
 		} else if("single" == parameter) {
 			differentialInput = false;
+		} else if("bias" == std::string(parameter.begin(), parameter.begin() + 4)) {
+			std::vector<std::string> tokens = StringUtils::split(str, '=');
+			if(2 == tokens.size())
+			{
+				micBias = atof(tokens[1].c_str());
+			}
 		} else {
 			++err;
 			continue;

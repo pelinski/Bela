@@ -72,7 +72,8 @@
 #endif /* DBOX_CAPE */
 
 #define ADC_TRM       0       // SPI transmit and receive
-#define ADC_WL        16      // Word length
+#define ADC_WL_ADS816X   24   // Word length for ADS816x ADC
+#define ADC_WL_AD7699    16   // Word length for AD7699 ADC
 #define ADC_CLK_MODE  0       // SPI mode
 #define ADC_CLK_DIV   1       // Clock divider (48MHz / 2^n)
 #define ADC_DPE       1       // d0 = receive, d1 = transmit
@@ -80,6 +81,13 @@
 #define AD7699_CFG_MASK       0xF120 // Mask for config update, unipolar, full BW
 #define AD7699_CHANNEL_OFFSET 9      // 7 bits offset of a 14-bit left-justified word
 #define AD7699_SEQ_OFFSET     3      // sequencer (0 = disable, 3 = scan all)
+
+#define ADS816X_INIT_DEVICE_CFG       0x081C00  // Write DEVICE_CFG to 0x00
+#define ADS816X_WRITE_CHANNEL_REG     0x081D00  // Write (0x01 << 19) CHANNEL_REG (0x1D << 8)
+#define ADS816X_DATA_OFFSET           8         // Right shift required to get ADC data
+#define ADS816X_COMMAND_WRITE         0x080000  // Write register command (0x01 << 19)
+#define ADS816X_COMMAND_READ          0x100000  // Read register command (0x02 << 19)
+#define ADS816X_REG_ACCESS            0x000000  // REG_ACCESS has address 0 (<< 8)
 
 #define SHARED_COMM_MEM_BASE  0x00010000  // Location where comm flags are written
 
@@ -191,6 +199,7 @@
 #define FLAG_BIT_BELA_MINI      10
 #define FLAG_BIT_CTAG_FACE      11
 #define FLAG_BIT_CTAG_BEAST     12
+#define FLAG_BIT_ADS816X        13
 		
 // Registers used throughout
 
@@ -536,6 +545,31 @@ DAC_CHANNEL_REORDER_HIGH:
 DAC_CHANNEL_REORDER_DONE:	
 .endm
 
+// Prepare a write to the ADC depending on which part we use
+// Register holds channel number at input, then turns into
+// the value to write to the ADC to read that channel
+.macro ADC_PREPARE_DATA
+.mparam data
+QBBC ADC_IS_AD7699, reg_flags, FLAG_BIT_ADS816X
+     MOV r27, ADS816X_WRITE_CHANNEL_REG
+     OR data, data, r27
+     QBA DONE
+ADC_IS_AD7699:
+     MOV r27, AD7699_CFG_MASK
+     LSL data, data, AD7699_CHANNEL_OFFSET
+     OR data, data, r27
+DONE:
+.endm
+
+// Process the results of the ADC transaction to retrieve
+// the sampled value
+.macro ADC_PROCESS_DATA
+.mparam data
+QBBC DONE, reg_flags, FLAG_BIT_ADS816X
+     // Right shift ADC output to get result
+     LSR data, data, ADS816X_DATA_OFFSET
+DONE:
+.endm
 
 // Bring CS line low to write to ADC
 .macro ADC_CS_ASSERT
@@ -592,6 +626,25 @@ DONE:
      ADC_CS_UNASSERT
 .endm
 
+.macro DO_DIGITAL
+// execution from here to the end of the macro takes 1.8us, while usually
+// ADC_WAIT_FOR_FINISH only waits for 1.14us.
+//TODO: it would be better to split the DIGITAL stuff in two parts:
+//- one taking place during DAC_WRITE which sets the GPIO_OE
+//- and the other during ADC_WRITE which actually reads DATAIN and writes CLEAR/SET DATAOUT
+     // do not use r27 from here to ...
+     LBBO r27, reg_digital_current, 0, 4
+     JAL r28.w0, DIGITAL // note that this is not called as a macro, but with JAL. r28 will contain the return address
+     // in the low word, set the bits corresponding to output values to 0
+     // this way, if the ARM program crashes, the PRU will write 0s to the outputs
+     LSL r28, r27, 16
+     // high word now contains bitmask with 0s where outputs are
+     AND r27.w2, r28.w2, r27.w2 // mask them out
+     SBBO r27, reg_digital_current, 0, 4
+     //..here you can start using r27 again
+     ADD reg_digital_current, reg_digital_current, 4 //increment pointer
+.endm
+
 // Complete ADC write+read with chip select and also performs IO for digital
 .macro ADC_WRITE_GPIO
 .mparam in, out, do_gpio
@@ -607,21 +660,7 @@ CASE_4_OR_8_CHANNELS:
      AND r27, do_gpio, 0x3 // only do a DIGITAL every 2 SPI I/O
      QBNE GPIO_DONE, r27, 0 
 DO_GPIO:
-//from here to GPIO_DONE takes 1.8us, while usually ADC_WAIT_FOR_FINISH only waits for 1.14us.
-//TODO: it would be better to split the DIGITAL stuff in two parts:
-//- one taking place during DAC_WRITE which sets the GPIO_OE
-//- and the other during ADC_WRITE which actually reads DATAIN and writes CLEAR/SET DATAOUT
-                            //r27 is actually r27, so do not use r27 from here to ...
-     LBBO r27, reg_digital_current, 0, 4 
-     JAL r28.w0, DIGITAL // note that this is not called as a macro, but with JAL. r28 will contain the return address
-     // in the low word, set the bits corresponding to output values to 0
-     // this way, if the ARM program crashes, the PRU will write 0s to the outputs
-     LSL r28, r27, 16
-     // high word now contains bitmask with 0s where outputs are
-     AND r27.w2, r28.w2, r27.w2 // mask them out
-     SBBO r27, reg_digital_current, 0,   4 
-                            //..here you can start using r27 again
-     ADD reg_digital_current, reg_digital_current, 4 //increment pointer
+     DO_DIGITAL
 GPIO_DONE:
      ADC_WAIT_FOR_FINISH
      ADC_RX out
@@ -835,8 +874,8 @@ SPI_WAIT_RESET:
      MOV r2, (3 << 27) | (DAC_DPE << 16) | (DAC_TRM << 12) | ((DAC_WL - 1) << 7) | (DAC_CLK_DIV << 2) | DAC_CLK_MODE | (1 << 6)
      SBBO r2, reg_spi_addr, SPI_CH0CONF, 4
 
-     // Configure CH1 for ADC
-     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
+     // Configure CH1 for ADC, starting with ADS816X
+     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL_ADS816X - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
      SBBO r2, reg_spi_addr, SPI_CH1CONF, 4
    
      // Turn on SPI channels
@@ -848,19 +887,55 @@ SPI_WAIT_RESET:
      MOV r2, (0x07 << AD5668_COMMAND_OFFSET)
      DAC_WRITE r2
 
-     // Initialise ADC
-     MOV r2, AD7699_CFG_MASK | (0 << AD7699_CHANNEL_OFFSET) | (0 << AD7699_SEQ_OFFSET)
+     // Detect ADS816x ADC by writing and reading back a magic number in a register
+     // This will have no effect as REG_ACCESS needs to be 0xAA to enable writing control
+     // registers (which we don't need to do anyway), and on AD7699 it will also not update
+     // any of the registers.
+     SET reg_flags, reg_flags, FLAG_BIT_ADS816X
+
+     MOV r2, ADS816X_COMMAND_WRITE | ADS816X_REG_ACCESS | 0x05
      ADC_WRITE r2, r2
+
+     MOV r2, ADS816X_COMMAND_READ | ADS816X_REG_ACCESS | 0x00
+     ADC_WRITE r2, r2
+
+     // Read back REG_ACCESS and initialise ADC
+     MOV r2, ADS816X_INIT_DEVICE_CFG
+     ADC_WRITE r2, r2
+
+     // REG_ACCESS is in top 8 bits of a 24-bit word
+     LSR r2, r2, 16
+     QBEQ ADC_INIT_DONE, r2, 0x05
+
+     // Expected value not found: assume AD7699 and reinit SPI
+
+     // Turn off ADC SPI channels
+     MOV r2, 0x00
+     SBBO r2, reg_spi_addr, SPI_CH1CTRL, 4
+
+     // Configure CH1 for AD7699 instead
+     MOV r2, (3 << 27) | (ADC_DPE << 16) | (ADC_TRM << 12) | ((ADC_WL_AD7699 - 1) << 7) | (ADC_CLK_DIV << 2) | ADC_CLK_MODE
+     SBBO r2, reg_spi_addr, SPI_CH1CONF, 4
+
+     // Turn on ADC SPI channels
+     MOV r2, 0x01
+     SBBO r2, reg_spi_addr, SPI_CH1CTRL, 4
+
+     CLR reg_flags, reg_flags, FLAG_BIT_ADS816X
+
+ADC_INIT_DONE:
 
      // Enable DAC internal reference
      MOV r2, (0x08 << AD5668_COMMAND_OFFSET) | (0x01 << AD5668_REF_OFFSET)
      DAC_WRITE r2
 	
      // Read ADC ch0 and ch1: result is always 2 samples behind so start here
-     MOV r2, AD7699_CFG_MASK | (0x00 << AD7699_CHANNEL_OFFSET)
+     MOV r2, 0x00
+     ADC_PREPARE_DATA r2
      ADC_WRITE r2, r2
 
-     MOV r2, AD7699_CFG_MASK | (0x01 << AD7699_CHANNEL_OFFSET)
+     MOV r2, 0x01
+     ADC_PREPARE_DATA r2
      ADC_WRITE r2, r2
 SPI_INIT_DONE:	
 
@@ -1128,11 +1203,10 @@ SPI_SKIP_DAC_WRITE_0:
      ADD r8, r1, 2
      SUB r7, reg_num_channels, 1
      AND r8, r8, r7
-     LSL r8, r8, AD7699_CHANNEL_OFFSET
-     MOV r7, AD7699_CFG_MASK
-     OR r7, r7, r8
 
-     ADC_WRITE_GPIO r7, r7, r1
+     ADC_PREPARE_DATA r8
+     ADC_WRITE_GPIO r8, r7, r1 // includes DO_DIGITAL
+     ADC_PROCESS_DATA r7
 
      // Mask out only the relevant 16 bits and store in reg_adc_data
      MOV r2, 0xFFFF
@@ -1159,10 +1233,10 @@ SPI_SKIP_DAC_WRITE_1:
      ADD r8, r1, 2
      SUB r7, reg_num_channels, 1
      AND r8, r8, r7
-     LSL r8, r8, AD7699_CHANNEL_OFFSET
-     MOV r7, AD7699_CFG_MASK
-     OR r7, r7, r8
-     ADC_WRITE r7, r7
+
+     ADC_PREPARE_DATA r8
+     ADC_WRITE r8, r7
+     ADC_PROCESS_DATA r7
 
      // Move this result up to the 16 high bits
      LSL r7, r7, 16
@@ -1191,6 +1265,13 @@ MUX_4_7_DONE:
      QBA ADC_DAC_LOOP_DONE
 SPI_SKIP_WRITE:
      // We get here only if the SPI ADC and DAC are disabled
+
+     // if digital is enabled and SPI is disabled, do digital here on even frames
+     QBBC GPIO_DONE, reg_flags, FLAG_BIT_USE_DIGITAL //skip if DIGITAL is disabled
+     AND r27, reg_frame_current, 0x1 // even frames only
+     QBNE GPIO_DONE, r27, 0
+     DO_DIGITAL
+GPIO_DONE:
      // Just keep the loop going for McASP
 
      // Toggle the high/low word for McASP control (since we send one word out of

@@ -22,7 +22,7 @@ SYSTEM_SPECIFIC_MAKEFILE=/tmp/BelaMakefile.inc
 include $(SYSTEM_SPECIFIC_MAKEFILE)
 $(SYSTEM_SPECIFIC_MAKEFILE):
 	make lib
-LIBRARY_CPPFLAGS = $(DEFAULT_XENOMAI_CFLAGS) -I$(BASE_DIR) -I$(BASE_DIR)/include -DNDEBUG -D$(BELA_USE_DEFINE) -I$(BASE_DIR)/resources/$(DEBIAN_VERSION)/include -MMD -MP -MF"$(@:%.o=%.d)"
+LIBRARY_CPPFLAGS = $(DEFAULT_XENOMAI_CFLAGS) -I$(BASE_DIR) -I$(BASE_DIR)/include -DNDEBUG -D$(BELA_USE_DEFINE) -I$(BASE_DIR)/resources/$(DEBIAN_VERSION)/include -MMD -MP -MT"$(@)" -MF"$(@:%.o=%.d)"
 #
 # the above default variables may be modified by the Makefile included here:
 MKFILE_COMPILE := libraries/$(LIBRARY)/build/Makefile.compile
@@ -53,7 +53,7 @@ clean:
 	$(AT) rm -rf $(LIBRARY_OBJS)
 
 cleanall:
-	$(AT) for LIB in libraries/*; do echo Cleaning $$LIB; $(MAKE) -f Makefile.libraries --no-print-directory LIBRARY=`basename $$LIB` clean AT=$(AT); done
+	$(AT) rm -rf libraries/*/build
 
 $(LIBRARY_BUILD_DIR)/%.o: $(LIBRARY_DIR)/%.c
 	$(AT) $(LIBRARY_CC) -c $< -o $@ $(LIBRARY_CPPFLAGS) $(LIBRARY_CFLAGS)

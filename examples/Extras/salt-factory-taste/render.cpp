@@ -107,11 +107,11 @@ void encodeNumberLed(BelaContext *context, int n, const int pwmPin, const int * 
 	}
 }
 
-bool flashNumberLed(BelaContext *context, int n, const int pwmPin, const int * ledPins, unsigned int nLeds, unsigned int number, unsigned int nFlash, unsigned int period, unsigned int count, unsigned int color = 0, bool reset = false)
+bool flashNumberLed(BelaContext *context, int n, const int pwmPin, const int * ledPins, unsigned int nLeds, unsigned int number, unsigned int nFlash, unsigned int period, int count, unsigned int color = 0, bool reset = false)
 {
 	static int flashBlock = count;
 	static int flashCount = 0;
-	static int prevNum = number;
+	static unsigned int prevNum = number;
 	static bool internalReset = reset;
 	if(prevNum != number || (reset && internalReset != reset))
 	{
@@ -202,16 +202,16 @@ bool setup(BelaContext *context, void *userData)
 	// Set switching period
 	gPeriod = 0.25 * context->digitalSampleRate; // duration (in samples) of a "brightness period", affects resolution of dimming. Larger values will cause flickering.
 	// Check if analog channels are enabled
-	if(context->audioFrames == 0 || context->audioFrames > context->audioFrames)
+	if(!context->audioFrames || context->analogFrames > context->audioFrames)
 	{
-		rt_printf("Error: analog channels must be enable to use the CV in and outs on Salt\n");
+		fprintf(stderr, "Error: analog channels must be enable to use the CV in and outs on Salt\n");
 		return false;
 	}
 
 	// Check that we have the same number of inputs and outputs.
 	if(context->audioInChannels != context->audioOutChannels || context->analogInChannels != context-> analogOutChannels)
 	{
-		printf("Error: there should be the same number of analog in and outs.\n");
+		fprintf(stderr, "Error: there should be the same number of analog in and outs.\n");
 		return false;
 	}
 	// Initialise CV range to absurdly high & low values
@@ -231,19 +231,19 @@ void render(BelaContext *context, void *userData)
 	if(0)
 	{
 		// some debugging stubs, useful when you are desperate
-		for(int n = 0; n < context->audioFrames; ++n)
+		for(unsigned int n = 0; n < context->audioFrames; ++n)
 		{
-			for(int ch = 0; ch < context->analogOutChannels; ++ch)
+			for(unsigned int ch = 0; ch < context->analogOutChannels; ++ch)
 			{
 				audioWrite(context, n, ch, 1);
 			}
 			gScope.log(audioRead(context, n, 0), audioRead(context, n, 1));
 		}
-		for(int ch = 0; ch < context->analogOutChannels; ++ch)
+		for(unsigned int ch = 0; ch < context->analogOutChannels; ++ch)
 		{
 			analogWrite(context, 0, ch, cvToAnalog(0));
 		}
-		for(int n = 0; n < context->analogFrames; ++n)
+		for(unsigned int n = 0; n < context->analogFrames; ++n)
 		{
 			//gScope.log(&(context->analogIn[context->analogInChannels * n]));
 		}
