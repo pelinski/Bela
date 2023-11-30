@@ -475,7 +475,7 @@ int Bela_initAudio(BelaInitSettings *settings, void *userData, float sampleRate,
 		gAudioCodec = new I2c_MultiI2sCodec(codecI2cBus, tlv320CodecI2cAddress, I2c_Codec::TLV320AIC3104, gRTAudioVerbose);
 	else if(Bela_hwContains(belaHw, Tlv320aic3104))
 	{
-		gAudioCodec = new I2c_Codec(codecI2cBus, codecI2cAddress, I2c_Codec::TLV320AIC3104, sampleRate, sampleRatePrescaler, gRTAudioVerbose);
+		gAudioCodec = new I2c_Codec(codecI2cBus, tlv320CodecI2cAddress, I2c_Codec::TLV320AIC3104, sampleRate, sampleRatePrescaler, gRTAudioVerbose);
 		if(Bela_hwContains(actualHw, CtagCape))
 			gDisabledCodec = new Spi_Codec(ctagSpidevGpioCs0, ctagSpidevGpioCs1);
 	}
