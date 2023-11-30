@@ -1,3 +1,16 @@
+// Custom libpd render.cpp to use with ADXL345 digital accelerometer
+// This uses the Linux library available at https://github.com/giuliomoro/adxl345-i2c-linux
+// The modifications (marked by `#ifdef AXL345`)
+// applied on top of
+// https://github.com/BelaPlatform/Bela/blob/a4cb254c9cdb1f5c0d3c8fa213179fdccdbc453b/core/default_libpd_render.cpp
+// Place this file in a Bela project alongside a `_main.pd` which contains:
+// [r bela_adxl345]
+// |
+// [print]
+//
+// This expect that you'd connect the ADXL345 to the I2C1 pins on your board
+// and that the ADXL345 is set to its default address. These can be changed in
+// the calle to adxl345_init() below.
 /*
  * Default render file for Bela projects running Pd patches
  * using libpd.
@@ -44,6 +57,26 @@
 #include <string.h>
 #include <vector>
 
+#define ADXL345
+#ifdef ADXL345
+#include "adxl345.h"
+std::array<float,3> gAcceleration;
+volatile size_t gAccelerationUpdated;
+void readAdxl345(void*)
+{
+	while(!Bela_stopRequested())
+	{
+		three_d_space* acc = adxl345_get_acceleration();
+		if(!acc) // something's broken with the device
+			return;
+		gAcceleration[0] = acc->x / 65536.f;
+		gAcceleration[1] = acc->y / 65536.f;
+		gAcceleration[2] = acc->z / 65536.f;
+		gAccelerationUpdated++;
+		usleep(90000);
+	}
+}
+#endif // ADXL345
 #if (defined(BELA_LIBPD_GUI) || defined(BELA_LIBPD_TRILL))
 #include <libraries/Pipe/Pipe.h>
 template <typename T>
@@ -1220,11 +1253,31 @@ bool setup(BelaContext *context, void *userData)
 	gTrillTask = Bela_createAuxiliaryTask(readTouchSensors, 51, "touchSensorRead", NULL);
 	gTrillPipe.setup("trillPipe", 1024);
 #endif // BELA_LIBPD_TRILL
+#ifdef ADXL345
+	if(adxl345_init(I2C_DEVICE_1, ADXL345_ADDR_LOW, ADXL345_DATARATE_12_5_HZ))
+	{
+		usleep(100000); // let outstanding rt_printf text print before us
+		fprintf(stderr, "ADXL345 failed to initialise\n");
+	} else {
+		Bela_runAuxiliaryTask(readAdxl345, 0);
+	}
+#endif // ADXL345
 	return true;
 }
 
 void render(BelaContext *context, void *userData)
 {
+#ifdef ADXL345
+	static size_t accelerationCount = 0;
+	if(accelerationCount != gAccelerationUpdated)
+	{
+		accelerationCount = gAccelerationUpdated;
+		libpd_start_message(gAcceleration.size());
+		for(auto& a : gAcceleration)
+			libpd_add_float(a);
+		libpd_finish_list("bela_adxl345");
+	}
+#endif // ADXL345
 #ifdef BELA_LIBPD_GUI
 	while(gGuiControlBuffers.size()) // this won't change within the loop, but it's good not to have to use a separate flag
 	{
@@ -1586,6 +1639,9 @@ void render(BelaContext *context, void *userData)
 
 void cleanup(BelaContext *context, void *userData)
 {
+#ifdef ADXL345
+	adxl345_finish();
+#endif // ADXL345
 #ifdef BELA_LIBPD_MIDI
 	for(auto a : midi)
 	{

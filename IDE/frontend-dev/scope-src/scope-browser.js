@@ -1,14 +1,64 @@
 'use strict';
 
 // worker
+let remoteHost = location.hostname + ":5432";
+let qs = new URLSearchParams(location.search);
+let qsRemoteHost = qs.get("remoteHost");
+let controlDisabled = parseInt(qs.get("controlDisabled"));
+let dataDisabled = parseInt(qs.get("dataDisabled"));
+let forceWebGl = parseInt(qs.get("forceWebGl"));
+let antialias = parseInt(qs.get("antialias"));
+let resolution = qs.get("resolution") ? parseInt(qs.get("resolution")) : 1;
+let darkMode = qs.get("darkMode") ? parseInt(qs.get("darkMode")) : 0;
+let showLabels = qs.get("showLabels") ? parseInt(qs.get("showLabels")) : 1;
+
+if(qsRemoteHost)
+  remoteHost = qsRemoteHost
+var wsRemote = "ws://" + remoteHost + "/";
 var worker = new Worker("js/scope-worker.js");
+if(dataDisabled) {
+  $('#ide-cpu').hide();
+  $('#bela-cpu').hide();
+  $('#scopeMouseX').hide();
+  $('#scopeMouseY').hide();
+} else {
+  worker.postMessage({
+    event: 'wsConnect',
+    remote: wsRemote,
+  });
+}
 
 // models
 var Model = require('./Model');
 var settings = new Model();
+var tabSettings = new Model();
+var allSettings = [ settings, tabSettings ];
+
+let toggleDarkMode = () => {
+  let newState = !tabSettings.getKey('darkMode');
+  setDarkMode(newState);
+}
+let setDarkMode = (newState) => {
+  tabSettings.setKey('darkMode', newState);
+  if(newState)
+    $('body').addClass('darkMode');
+  else
+    $('body').removeClass('darkMode');
+}
+setDarkMode(darkMode);
+tabSettings.setKey('showLabels', showLabels);
 
 // Pixi.js renderer and stage
-var renderer = PIXI.autoDetectRenderer(window.innerWidth, window.innerHeight, {transparent: true});
+var renderer = PIXI.autoDetectRenderer({
+  width: window.innerWidth,
+  heigh: window.innerHeight,
+  backgroundAlpha: 0,
+  antialias: antialias,
+  forceCanvas: !forceWebGl,
+  autoDensity: true, // somehow makes CSS compensate for increased resolution. Not sure it's needed for us
+  resolution: resolution, // sort of oversampling for antialias
+});
+console.log(renderer)
 renderer.view.style.position = "absolute";
 renderer.view.style.display = "block";
 renderer.autoResize = true;
@@ -16,28 +66,39 @@ $('.scopeWrapper').append(renderer.view);
 var stage = new PIXI.Container();
 
 // views
-var controlView = new (require('./ControlView'))('scope-controls', [settings]);
-var backgroundView = new (require('./BackgroundView'))('scopeBG', [settings], renderer);
-var channelView = new (require('./ChannelView'))('channelView', [settings]);
-var sliderView = new (require('./SliderView'))('sliderView', [settings]);
+var controlView = new (require('./ControlView'))('scope-controls', allSettings);
+if(dataDisabled)
+  controlView.controlsVisibility(true);
+var backgroundView = dataDisabled ? {} : new (require('./BackgroundView'))('scopeBG', allSettings, renderer);
+var channelView = new (require('./ChannelView'))('channelView', allSettings);
 
 // main bela socket
 var belaSocket = io('/IDE');
 
-// scope websocket
-var ws;
+function sendToWs(obj) {
+  // do not send frameWidth if we are not receiving data,
+  // or the server will get confused
+  if(dataDisabled)
+    delete obj.frameWidth;
+  if (ws && ws.readyState === 1) {
+    let out;
+    try {
+      let out = JSON.stringify(obj);
+      ws.send(out);
+    }
+    catch(e){
+      console.log('could not stringify settings:', e);
+      return;
+    }
+  }
+}
 
-var wsAddress = "ws://" + location.host + ":5432/scope_control"
-ws = new WebSocket(wsAddress);
 var ws_onerror = function(e){
   setTimeout(() => {
-    ws = new WebSocket(wsAddress);
-    ws.onerror = ws_onerror;
-    ws.onopen = ws_onopen;
-    ws.onmessage = ws_onmessage;
+    ws = new WebSocket(wsUrl);
+    setWsCbs(ws)
   }, 500);
 };
-ws.onerror = ws_onerror;
 
 var ws_onopen = function(){
   ws.binaryType = 'arraybuffer';
@@ -45,7 +106,6 @@ var ws_onopen = function(){
   ws.onclose = ws_onerror;
   ws.onerror = undefined;
 };
-ws.onopen = ws_onopen;
 
 var ws_onmessage = function(msg){
   // console.log('recieved scope control message:', msg.data);
@@ -68,38 +128,78 @@ var ws_onmessage = function(msg){
 
     var obj = settings._getData();
     obj.event = "connection-reply";
-    var out;
-    try{
-      out = JSON.stringify(obj);
-    }
-    catch(e){
-      console.log('could not stringify settings:', e);
-      return;
-    }
-    if (ws.readyState === 1) ws.send(out);
-  } else if (data.event == 'set-slider'){
-    sliderView.emit('set-slider', data);
+    sendToWs(obj);
+  } else if (data.event == 'update'){
+    // this is a full update due to the setting having changed in a different tab
+	// unfortunately we don't yet have a way to handle it properly without
+	// causing a ping-pong between the two tabs.
+	// Another issue with two clients open receiving data at the same time is
+	// that they need to share the same frameWidth or it's going to be a
+	// problem!
+	// TODO: do it!
   } else if (data.event == 'set-setting'){
     if (settings.getKey(data.setting) !== undefined) {
       settings.setKey(data.setting, data.value);
     }
   }
 };
-ws.onmessage = ws_onmessage;
+function setWsCbs(ws) {
+  ws.onerror = ws_onerror;
+  ws.onopen = ws_onopen;
+  ws.onmessage = ws_onmessage;
+}
+
+let wsUrl = wsRemote + "scope_control";
+// scope websocket
+let ws;
+if(!controlDisabled) {
+  ws = new WebSocket(wsUrl);
+  setWsCbs(ws);
+}
 
 var paused = false, oneShot = false;
 
 // view events
+const kScopeWaiting = 0, kScopeTriggered = 1, kScopePaused = 2, kScopeWaitingOneShot = 3, kScopeDisabled = 4;
+function setScopeStatus(status) {
+  if(dataDisabled)
+    status = kScopeDisabled;
+  let d = $('#scopeStatus');
+  let trigCls = 'scope-status-triggered';
+  let waitCls = 'scope-status-waiting';
+  d.removeClass(trigCls).removeClass(waitCls);
+  switch(status) {
+    case(kScopeWaiting):
+      d.addClass(waitCls);
+      d.html('waiting');
+      break;
+    case(kScopeTriggered):
+      d.addClass(trigCls);
+      d.html('triggered');
+      break;
+    case(kScopePaused):
+      d.addClass(waitCls);
+      d.html('paused');
+      break;
+    case(kScopeWaitingOneShot):
+      d.addClass(waitCls);
+	  d.html('waiting (one-shot)');
+      break;
+    case(kScopeDisabled):
+      d.html('DISABLED');
+      break;
+  }
+}
 controlView.on('settings-event', (key, value) => {
   if (key === 'scopePause'){
     if (paused){
       paused = false;
       $('.pause-button').html('Pause plotting');
-      $('#scopeStatus').html('waiting');
+      setScopeStatus(kScopeWaiting);
     } else {
       paused = true;
       $('.pause-button').html('Resume plotting');
-      $('#scopeStatus').removeClass('scope-status-triggered').addClass('scope-status-waiting').html('paused');
+      setScopeStatus(kScopePaused);
     }
     return;
   } else if (key === 'scopeOneShot'){
@@ -108,20 +208,18 @@ controlView.on('settings-event', (key, value) => {
       paused = false;
       $('#pauseButton').html('pause');
     }
-    $('#scopeStatus').removeClass('scope-status-triggered').addClass('scope-status-waiting').html('waiting (one-shot)');
+    setScopeStatus(kScopeWaitingOneShot);
+  } else if (key === 'darkMode') {
+    toggleDarkMode();
+    return; // do not send via websocket
+  } else if (key === 'showLabels') {
+    tabSettings.setKey('showLabels', !tabSettings.getKey('showLabels'));
+    return; // do not send via websocket
   }
   if (value === undefined) return;
   var obj = {};
   obj[key] = value;
-  var out;
-  try{
-    out = JSON.stringify(obj);
-  }
-  catch(e){
-    console.log('error creating settings JSON', e);
-    return;
-  }
-  if (ws.readyState === 1) ws.send(out);
+  sendToWs(obj);
   settings.setKey(key, value);
 });
 
@@ -166,19 +264,6 @@ channelView.on('channelConfig', (channelConfig) => {
   legend.update(channelConfig);
 });
 
-sliderView.on('slider-value', (slider, value) => {
-  var obj = {event: "slider", slider, value};
-  var out;
-  try{
-    out = JSON.stringify(obj);
-  }
-  catch(e){
-    console.log('could not stringify slider json:', e);
-    return;
-  }
-  if (ws.readyState === 1) ws.send(out)
-});
-
 belaSocket.on('cpu-usage', CPU);
 
 // model events
@@ -186,15 +271,7 @@ settings.on('set', (data, changedKeys) => {
   if (changedKeys.indexOf('frameWidth') !== -1){
     var xTimeBase = Math.max(Math.floor(1000*(data.frameWidth/8)/data.sampleRate), 1);
     settings.setKey('xTimeBase', xTimeBase);
-    var out;
-    try{
-      out = JSON.stringify({frameWidth: data.frameWidth});
-    }
-    catch(e){
-      console.log('unable to stringify framewidth', e);
-      return;
-    }
-    if (ws.readyState === 1) ws.send(out);
+    sendToWs({frameWidth: data.frameWidth});
   } else {
     worker.postMessage({
       event   : 'settings',
@@ -322,66 +399,95 @@ function CPU(data){
   channelView.on('channelConfig', (config) => channelConfig = config );
   
   let frame, length, plot = false;
+  let oldDataSeparator = -1;
 
   worker.onmessage = function(e) {
-    frame = e.data;
+    oldDataSeparator = e.data.oldDataSeparator;
+    frame = e.data.outArray;
     length = Math.floor(frame.length/numChannels);
     // if scope is paused, don't set the plot flag
     plot = !paused;
+    if(plot)
+      requestAnimationFrame(plotLoop);
     
     // interpolate the trigger sample to get the sub-pixel x-offset
     if (settings.getKey('plotMode') == 0){
-  //    if (upSampling == 1){
         let one = Math.abs(frame[Math.floor(triggerChannel*length+length/2)+xOffset-1] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1));
         let two = Math.abs(frame[Math.floor(triggerChannel*length+length/2)+xOffset] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1));
         xOff = (one/(one+two)-1.5);
-  /*    } else {
-        for (var i=0; i<=(upSampling*2); i++){
-          let one = frame[Math.floor(triggerChannel*length+length/2)+xOffset*upSampling-i] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1);
-          let two = frame[Math.floor(triggerChannel*length+length/2)+xOffset*upSampling+i] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1);
-          if ((one > triggerLevel && two < triggerLevel) || (one < triggerLevel && two > triggerLevel)){
-            xOff = i*(Math.abs(one)/(Math.abs(one)+Math.abs(two))-1);
-            break;
-          }
-        }
-      }
-      console.log(xOff);
-  */    if (isNaN(xOff)) xOff = 0;
+      if (isNaN(xOff))
+        xOff = 0;
     }
   };
   
+  const benchmarkDrawing = false;
+  const plotRuns = 50;
+  let plotRunsSum = 0;
+  let plotRunsStart = 0;
+  let plotRunsIdx = 0;
   function plotLoop(){
-    requestAnimationFrame(plotLoop);
-    if (plot){
-      plot = false;
-      ctx.clear();
-      let minY = 0;
-      let maxY = renderer.height;
-      for (var i=0; i<numChannels; i++){
-        if(!channelConfig[i].enabled)
-          continue;
-        ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, 1);
-        let iLength = i*length;
-        let constrain = (v, min, max) => {
-          if(v < min)
-            return min;
-          if(v > max)
-            return max;
-          return v;
-        }
-        let curr = constrain(frame[iLength], minY, maxY);
-        let next = constrain(frame[iLength + 1], minY, maxY);
-        ctx.moveTo(0, curr + xOff*(next - curr));
-        for (var j=1; (j-xOff)<length; j++){
-          let curr = constrain(frame[j + iLength], minY, maxY);
-          ctx.lineTo(j-xOff, curr);
-        }
+    if (!plot){
+      return
+    }
+    plot = false;
+    let start;
+    if(benchmarkDrawing)
+      start = performance.now();
+    ctx.clear();
+    let minY = 0;
+    let maxY = renderer.height;
+    for (var i=0; i<numChannels; i++){
+      if(!channelConfig[i].enabled)
+        continue;
+      ctx.lineStyle({
+        width: channelConfig[i].lineWeight,
+        color: channelConfig[i].color,
+        alpha: 1,
+        native: false, // setting this to true may reduce CPU usage but only allows width: 1
+      });
+      let iLength = i*length;
+      let constrain = (v, min, max) => {
+        if(v < min)
+          return min;
+        if(v > max)
+          return max;
+        return v;
       }
-      renderer.render(stage);
-      triggerStatus();
-    } /*else {
-      console.log('not plotting');
-    }*/
+      let curr = constrain(frame[iLength], minY, maxY);
+      let next = constrain(frame[iLength + 1], minY, maxY);
+      ctx.moveTo(0, curr + xOff*(next - curr));
+      let lastAlpha = 1;
+      for (var j=1; (j-xOff)<length; j++){
+        let curr = constrain(frame[j + iLength], minY, maxY);
+        // when drawing incrementally, alpha will be 1 when close to the most
+        // recent and then progressively fade out for older values
+        if(oldDataSeparator >= 0) {
+          let dist = (length + oldDataSeparator - j - 1) % length;
+          let alpha = dist < length / 2 ? 1 : 1 - (dist - length / 2) / (length / 2);
+          // throttle lineStyle() calls as they are CPU-heavy
+          if(Math.abs(alpha - lastAlpha) > 0.1 || (lastAlpha != 1 && alpha == 1)) {
+            lastAlpha = alpha;
+            ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, alpha);
+          }
+        }
+        ctx.lineTo(j-xOff, curr);
+      }
+    }
+    renderer.render(stage);
+    triggerStatus();
+    if(benchmarkDrawing) {
+      let stop = performance.now();
+      let dur = stop - start;
+      plotRunsSum += dur;
+      plotRunsIdx++;
+      if(plotRunsIdx >= plotRuns) {
+        let perc = plotRunsSum / (stop - plotRunsStart) * 100;
+        console.log("sum: " + plotRunsSum.toFixed(2) + ", avg: ", + perc.toFixed(2) + "%, avg fps: ", plotRuns / ((stop - plotRunsStart) / 1000));
+        plotRunsSum = 0;
+        plotRunsIdx = 0;
+        plotRunsStart = stop;
+      }
+    }
   }
   plotLoop();
   
@@ -390,7 +496,6 @@ function CPU(data){
   let inactiveTimeout = setTimeout(() => {
     if (!oneShot && !paused) inactiveOverlay.addClass('inactive-overlay-visible');
   }, 5000);
-  let scopeStatus = $('#scopeStatus');
   let inactiveOverlay = $('#inactive-overlay');
   function triggerStatus(){
   
@@ -399,13 +504,14 @@ function CPU(data){
     if (oneShot){
       oneShot = false;
       paused = true;
-      $('.pause-button').html('resume');
-      scopeStatus.removeClass('scope-status-triggered').addClass('scope-status-waiting').html('paused');
+      $('.pause-button').html('Resume plotting');
+      setScopeStatus(kScopePaused);
     } else {
-      scopeStatus.removeClass('scope-status-waiting').addClass('scope-status-triggered').html('triggered');
+      setScopeStatus(kScopeTriggered);
       if (triggerTimeout) clearTimeout(triggerTimeout);
       triggerTimeout = setTimeout(() => {
-        if (!oneShot && !paused) scopeStatus.removeClass('scope-status-triggered').addClass('scope-status-waiting').html('waiting');
+        if (!oneShot && !paused)
+          setScopeStatus(kScopeWaiting);
       }, 1000);
       
       if (inactiveTimeout) clearTimeout(inactiveTimeout);
@@ -460,7 +566,6 @@ function CPU(data){
 settings.setData({
   numChannels : 2,
   sampleRate  : 44100,
-  numSliders  : 0,
   frameWidth  : 1280,
   plotMode  : 0,
   triggerMode : 0,
@@ -468,13 +573,13 @@ settings.setData({
   triggerDir  : 0,
   triggerLevel  : 0,
   xOffset   : 0,
+  xAxisBehaviour: 0,
   upSampling  : 1,
   downSampling  : 1,
   FFTLength : 1024,
   FFTXAxis  : 0,
   FFTYAxis  : 0,
   holdOff   : 0,
-  numSliders  : 0,
   interpolation : 0
 });
 

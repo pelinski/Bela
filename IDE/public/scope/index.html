@@ -4,6 +4,11 @@
     <meta charset="utf-8">
     <title>Bela Oscilloscope</title>
     <link rel="stylesheet" type="text/css" href="/css/style.css" />
+    <link rel="icon" href="/favicon.ico">
+    <link rel="apple-touch-icon" href="/favicon.ico">
+    <meta name="apple-mobile-web-app-title" content="Bela Scope">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   </head>
   <body>
 
@@ -29,7 +34,7 @@
       <span id="bela-cpu">Bela CPU:</span>
       <span id="scopeMouseX">Mouse X position:</span>
       <span id="scopeMouseY">Mouse Y position:</span>
-      <span id="scopeStatus" class="scope-status-waiting">waiting</span>
+      <span id="scopeStatus" class="scope-status-waiting">DISABLED</span>
     </div>
 
     <div id="control-panel" class="hidden scope-controls-parent channelView-parent">
@@ -69,6 +74,18 @@
             </div>
             <div class="slider range">
               <input  class="scope-controls scope-range-slider" data-key="holdOff" type="range" min="0" max="1000" value="0" step="1" />
+            </div>
+            <div class="scope-label">
+              <p>Behaviour:</p>
+			</div>
+            <div class="scope-input">
+              <span class="mini-dropdown">
+                <select class="scope-controls" data-key="xAxisBehaviour">
+                  <option value="0" selected>Normal</option>
+                  <option value="1">Incremental</option>
+                  <option value="2">Roll</option>
+                </select>
+              </span>
             </div>
           </div>
 
@@ -213,9 +230,11 @@
 
           <h3>Misc</h3>
           <div class="block-section">
-            <button class="scope-controls pause-button" data-key="scopePause" data-func="pauseButton">Pause plotting</button>
-            <a href="" download="scope" id="saveCanvas"><button class="scope-controls">Export scope image</button></a>
-            <a href="" download="scopeData.csv" id="saveCanvasData"><button class="scope-controls export">Export CSV data</button></a>
+            <button class="scope-controls dark-mode-button" data-key="darkMode" data-func="darkMode">Dark mode</button><br />
+            <button class="scope-controls show-labels-button" data-key="showLabels" data-func="showLabels">Show labels</button><br />
+            <button class="scope-controls pause-button" data-key="scopePause" data-func="pauseButton">Pause plotting</button><br />
+            <a href="" download="scope" id="saveCanvas"><button class="scope-controls">Export scope image</button></a><br />
+            <a href="" download="scopeData.csv" id="saveCanvasData"><button class="scope-controls export">Export CSV data</button></a><br />
           </div>
         </div> <!-- end misc -->
 
@@ -223,7 +242,7 @@
 
       <div class="control-panel-column channels">
         <div class="control-section channel">
-          <div class="channel-view-0">
+          <div class="channel-view-template" style="display: none">
             <h3><span data-channel-name>Channel 1</span></h3>
 
             <div class="block-section">
@@ -232,11 +251,11 @@
               </div>
 
               <div class="slider value">
-                <input class="channelView number-box" data-key="yAmplitude" data-channel="0" type="number" value="1" step="0.00001" />
+                <input class="channelView number-box" data-key="yAmplitude" data-channel="template" type="number" value step="0.00001" />
               </div>
 
               <div class="slider range">
-                <input class="channelView scope-range-slider" data-key="yAmplitudeSlider" data-channel="0" type="range" min="0" max="100" value="1" step="0.0001" />
+                <input class="channelView scope-range-slider" data-key="yAmplitudeSlider" data-channel="template" type="range" min="0" max="100" value step="0.0001" />
               </div>
             </div>
 
@@ -246,11 +265,11 @@
               </div>
 
               <div class="slider value">
-                <input class="channelView number-box" data-key="yOffset" data-channel="0" type="number" value="0" step="0.00001" />
+                <input class="channelView number-box" data-key="yOffset" data-channel="template" type="number" value step="0.00001" />
               </div>
 
               <div class="slider range">
-                <input class="channelView scope-range-slider" data-key="yOffset" data-channel="0" type="range" min="-1" max="1" value="0" step="0.0001" />
+                <input class="channelView scope-range-slider" data-key="yOffset" data-channel="template" type="range" min="-1" max="1" value step="0.0001" />
               </div>
             </div>
 
@@ -260,11 +279,11 @@
               </div>
 
               <div class="slider value">
-                <input class="channelView number-box" data-key="lineWeight" data-channel="0" type="number" value="1.5" min="1" max="10" step="0.1" />
+                <input class="channelView number-box" data-key="lineWeight" data-channel="template" type="number" value min="1" max="10" step="0.1" />
               </div>
 
               <div class="slider range">
-                <input class="channelView scope-range-slider" data-key="lineWeight" data-channel="0" type="range" value="1.5" min="1" max="10" step="0.1" />
+                <input class="channelView scope-range-slider" data-key="lineWeight" data-channel="template" type="range" value min="1" max="10" step="0.1" />
               </div>
             </div>
 
@@ -274,7 +293,7 @@
               </div>
 
               <div class="slider value colour">
-                <input class="channelView number-box" data-key="color" data-channel="0" type="color" value="#ff0000" />
+                <input class="channelView number-box" data-key="color" data-channel="template" type="color" value="#000000" />
               </div>
             </div>
 
@@ -287,12 +306,14 @@
 
     <div class="scopeWrapper">
       <canvas id="scopeBG"></canvas>
+      <div id="p5-ctx"></div>
     </div><!-- end scope wrapper -->
 
     <script src="js/jquery.js"></script>
+    <script src="../js/p5.min.js"></script>
     <script src="../socket.io/socket.io.js"></script>
     <script src="js/polyfill.js"></script>
-    <script src="js/pixi.js"></script>
+    <script src="js/pixi-legacy.js"></script>
     <script src="js/bundle.js"></script>
 
   </body>

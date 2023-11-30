@@ -77,8 +77,9 @@ void Gui::ws_connect(const std::string& address, const WSServerDetails* id)
  */
 void Gui::ws_disconnect(const std::string& address, const WSServerDetails* id)
 {
-	if(wsConnections.count(id))
-		wsConnections.erase(id);
+	for(auto& wsc : {&wsConnections, &wsActiveConnections})
+		if(wsc->count(id))
+			wsc->erase(id);
 }
 
 /*
@@ -105,6 +106,14 @@ void Gui::ws_onControlData(const std::string& address, const WSServerDetails* id
 		if (event.compare(L"connection-reply") == 0){
 			if(!wsConnections.count(id))
 				wsConnections.insert(id);
+			// by default also set connection as active
+			if(!wsActiveConnections.count(id))
+				wsActiveConnections.insert(id);
+		} else if(event.compare(L"active") == 0){
+			if(!wsActiveConnections.count(id))
+				wsActiveConnections.insert(id);
+		} else if(event.compare(L"inactive") == 0){
+			wsActiveConnections.erase(id);
 		}
 	}
 	delete value;

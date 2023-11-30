@@ -1,11 +1,12 @@
 /***** AuxTaskNonRT.cpp *****/
 #include "../include/Bela.h"
 #include <AuxTaskNonRT.h>
-#include "../include/xenomai_wraps.h"
+#include "../include/RtWrappers.h"
 #include <fcntl.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <vector>
+#include <string.h>
 
 extern int volatile gRTAudioVerbose;
 
@@ -42,39 +43,20 @@ void AuxTaskNonRT::__create(){
 	// create the xenomai task
 	int priority = 0;
 	int stackSize = 65536 * 4;
-#ifdef XENOMAI_SKIN_native //posix skin does evertything in one go below
-	if (int ret = rt_task_create(&task, name.c_str(), stackSize, priority, T_JOINABLE))
-	{
-		fprintf(stderr, "Unable to create AuxTaskNonRT %s: %i\n", name.c_str(), ret);
-		return;
-	}
-#endif
 
 	// create an rt_pipe
 	std::string p_name = "p_" + name;
-#ifdef XENOMAI_SKIN_native
-	rt_pipe_delete(&pipe);
-	int ret = rt_pipe_create(&pipe, p_name.c_str(), P_MINOR_AUTO, 0);
-	if(ret < 0)
-#endif
-#ifdef XENOMAI_SKIN_posix
 	int pipeSize = 65536 * 10;
-	int ret = createXenomaiPipe(p_name.c_str(), pipeSize);
+	int ret = createBelaRtPipe(p_name.c_str(), pipeSize);
 	pipeSocket = ret;
 	if(ret <= 0)
-#endif
 	{
 		fprintf(stderr, "Unable to create AuxTaskNonRT %s pipe %s: (%i) %s\n", name.c_str(), p_name.c_str(), ret, strerror(ret));
 		return;
 	}
 	
 	// start the xenomai task
-#ifdef XENOMAI_SKIN_native
-	if (int ret = rt_task_start(&task, AuxTaskNonRT::thread_func, this))
-#endif
-#ifdef XENOMAI_SKIN_posix
-	if(int ret = create_and_start_thread(&thread, name.c_str(), priority, stackSize, (pthread_callback_t*)AuxTaskNonRT::thread_func, this))
-#endif
+	if(int ret = create_and_start_thread(&thread, name.c_str(), priority, stackSize, NULL, (pthread_callback_t*)AuxTaskNonRT::thread_func, this))
 	{
 		fprintf(stderr, "Unable to start AuxTaskNonRT %s: %i, %s\n", name.c_str(), ret, strerror(ret));
 		return;
@@ -82,12 +64,7 @@ void AuxTaskNonRT::__create(){
 }
 
 int AuxTaskNonRT::schedule(const void* ptr, size_t size){
-#ifdef XENOMAI_SKIN_native
-	int ret = rt_pipe_write(&pipe, ptr, size, P_NORMAL);
-#endif
-#ifdef XENOMAI_SKIN_posix
-	int ret = __wrap_sendto(pipeSocket, ptr, size, 0, NULL, 0);
-#endif
+	int ret = BELA_RT_WRAP(sendto(pipeSocket, ptr, size, 0, NULL, 0));
 	if(ret < 0)
 	{
 		rt_fprintf(stderr, "Error while sending to pipe from %s: (%d) %s (size: %d)\n", name.c_str(), errno, strerror(errno), size);
@@ -105,18 +82,13 @@ int AuxTaskNonRT::schedule(){
 
 void AuxTaskNonRT::cleanup(){
 	lShouldStop = true;
-#ifdef XENOMAI_SKIN_native
-	rt_task_delete(&task);
-	rt_pipe_delete(&pipe);
-#endif
-#ifdef XENOMAI_SKIN_posix
 	// unblock and join thread
 	schedule();
-	int ret = __wrap_pthread_join(thread, NULL);
+	int ret = BELA_RT_WRAP(pthread_join(thread, NULL));
 	if (ret < 0){
 		fprintf(stderr, "AuxTaskNonRT %s: unable to join thread: (%i) %s\n", name.c_str(), ret, strerror(ret));
 	}
-	ret = __wrap_close(pipeSocket);
+	ret = BELA_RT_WRAP(close(pipeSocket));
 	if(ret)
 	{
 		fprintf(stderr, "Error closing pipeSocket: %d %s\n", errno, strerror(errno));
@@ -126,15 +98,10 @@ void AuxTaskNonRT::cleanup(){
 	{
 		fprintf(stderr, "Error closing pipe_fd: %d %s\n", errno, strerror(errno));
 	}
-#endif
 }
 
 int AuxTaskNonRT::openPipe(){
-#if XENOMAI_SKIN_posix || XENOMAI_MAJOR == 3
 	std::string outPipeNameTemplateString = "/proc/xenomai/registry/rtipc/xddp/p_";
-#else
-	std::string outPipeNameTemplateString = "/proc/xenomai/registry/native/pipes/p_";
-#endif
 	std::string rtp_name = outPipeNameTemplateString + name;
 	pipe_fd = open(rtp_name.c_str(), O_RDWR);
 	if (pipe_fd < 0){

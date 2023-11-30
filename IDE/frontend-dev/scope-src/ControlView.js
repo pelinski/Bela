@@ -9,18 +9,21 @@ class ControlView extends View{
     super(className, models);
     $('#controlsButton, .overlay').on('click', () => this.toggleControls());
     $('body').on('keydown', (e) => this.keyHandler(e));
+    this.addGenericHandlers();
   }
 
-  toggleControls(){
-    if (controls) {
-      controls = false;
-      $('#control-panel').addClass('hidden');
-      $('.overlay').removeClass('active');
-    } else {
-      controls = true;
+  controlsVisibility(show) {
+    controls = show;
+    if(show) {
       $('#control-panel').removeClass('hidden');
       $('.overlay').addClass('active');
+    } else {
+      $('#control-panel').addClass('hidden');
+      $('.overlay').removeClass('active');
     }
+  }
+  toggleControls(){
+    this.controlsVisibility(!controls);
   }
 
   keyHandler(e){
@@ -46,19 +49,22 @@ class ControlView extends View{
   buttonClicked($element, e){
     if ($element.data().key === 'upSampling'){
       if (downSampling > 1){
-        downSampling -= 1;
+        downSampling /= 2;
         this.emit('settings-event', 'downSampling', downSampling);
       } else {
-        upSampling += 1;
-        this.emit('settings-event', 'upSampling', upSampling);
+        if(upSampling < 64) {
+          // an arbitrary limit: higher than this and pileups start happening
+          upSampling *= 2;
+          this.emit('settings-event', 'upSampling', upSampling);
+        }
       }
       // this._upSampling();
     } else if ($element.data().key === 'downSampling'){
       if (upSampling > 1){
-        upSampling -= 1;
+        upSampling /= 2;
         this.emit('settings-event', 'upSampling', upSampling);
       } else {
-        downSampling += 1;
+        downSampling *= 2;
         this.emit('settings-event', 'downSampling', downSampling);
       }
       // this._downSampling();
@@ -84,43 +90,58 @@ class ControlView extends View{
     }
   }
 
+  msDiv() {
+    let time = (xTime * downSampling/upSampling);
+    if(time < 10)
+      time = time.toFixed(2);
+    else if (time < 100)
+      time = time.toFixed(1);
+    else
+      time = time.toFixed(0);
+    return time;
+  }
+
+  hzDiv() {
+    let hz = (sampleRate/20 * upSampling/downSampling);
+    return hz.toFixed(0);
+  }
+
+  updateUnitDisplay(data) {
+    let unitDisplay;
+    if (data.plotMode == 0){
+      unitDisplay = this.msDiv();
+    } else if (data.plotMode == 1){
+      unitDisplay = this.hzDiv();
+    }
+    $('.xUnit-display').html(unitDisplay);
+  }
+
   plotMode(val, data){
     this.emit('plotMode', val, data);
     if (val == 0){
       if ($('#control-underlay').hasClass('')) $('#control-underlay').addClass('hidden');
       if ($('#triggerControls').hasClass('hidden')) $('#triggerControls').removeClass('hidden');
       if (!$('#FFTControls').hasClass('hidden')) $('#FFTControls').addClass('hidden');
-      $('.xAxisUnits').html('<p>ms</p>');
-      $('.xUnit-display').html('<p>'+ (xTime * downSampling/upSampling).toPrecision(2) +'</p>');
-      $('#zoomUp').html('Zoom in');
-      $('#zoomDown').html('Zoom out');
+      $('.xAxisUnits').html("ms");
     } else if (val == 1){
       if ($('#control-underlay').hasClass('hidden')) $('#control-underlay').removeClass('hidden');
       if (!$('#trigger-controls').hasClass('hidden')) $('#triggerControls').addClass('hidden');
       if ($('#FFTControls').hasClass('hidden')) $('#FFTControls').removeClass('hidden');
-      $('.xAxisUnits').html('Hz');
-      $('.xUnit-display').html((sampleRate/20 * upSampling/downSampling));
-      $('#zoomUp').html('Zoom out');
-      $('#zoomDown').html('Zoom in');
+      $('.xAxisUnits').html("Hz");
     }
+    this.updateUnitDisplay(data);
+    $('#zoomUp').html('Zoom in');
+    $('#zoomDown').html('Zoom out');
   }
 
   _upSampling(value, data){
     upSampling = value;
-    if (data.plotMode == 0){
-      $('.xUnit-display').html('<p>'+ (xTime * downSampling/upSampling).toPrecision(2) +'</p>');
-    } else if (data.plotMode == 1){
-      $('.xUnit-display').html((data.sampleRate/20 * data.upSampling/data.downSampling));
-    }
+    this.updateUnitDisplay(data);
     $('.zoom-display').html((100*upSampling/downSampling).toPrecision(4)+'%');
   }
   _downSampling(value, data){
     downSampling = value;
-    if (data.plotMode == 0){
-      $('.xUnit-display').html('<p>'+ (xTime * downSampling/upSampling).toPrecision(2) +'</p>');
-    } else if (data.plotMode == 1){
-      $('.xUnit-display').html('<p>'+ (xTime * downSampling/upSampling).toPrecision(2) +'</p>');
-    }
+    this.updateUnitDisplay(data);
   }
   _xTimeBase(value, data){
     xTime = data.xTimeBase;
@@ -139,20 +160,39 @@ class ControlView extends View{
     }
   }
 
-  _triggerMode(value){
-    this.$elements.filterByData('key', 'triggerMode').val(value);
+  addGenericHandlers() {
+    let genericHandlers = [
+      "triggerMode",
+      "triggerChannel",
+      "triggerDir",
+      "triggerLevel",
+      "xAxisBehaviour",
+      "holdOff",
+      "xOffset",
+      "interpolation",
+    ];
+    for(let n = 0; n < genericHandlers.length; ++n) {
+      let h = genericHandlers[n];
+      this["_" + h] = (value) => {
+        this.$elements.filterByData('key', h).val(value);
+      }
+    }
   }
 
-  _triggerChannel(value){
-    this.$elements.filterByData('key', 'triggerChannel').val(value);
+  _xAxisBehaviour(value){
+    this.$elements.filterByData('key', 'xAxisBehaviour').val(value);
   }
 
-  _triggerDir(value){
-    this.$elements.filterByData('key', 'triggerDir').val(value);
+  _holdOff(value){
+    this.$elements.filterByData('key', 'holdOff').val(value);
   }
 
-  _triggerLevel(value){
-    this.$elements.filterByData('key', 'triggerLevel').val(value);
+  _xOffset(value){
+    this.$elements.filterByData('key', 'xOffset').val(value);
+  }
+
+  _interpolation(value){
+    this.$elements.filterByData('key', 'interpolation').val(value);
   }
 }
 

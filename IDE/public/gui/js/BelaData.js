@@ -1,7 +1,7 @@
 import BelaWebSocket from './BelaWebSocket.js'
 
 export default class BelaData extends BelaWebSocket {
-	constructor(port=5555, address='gui_data', ip=location.host) {
+	constructor(port=5555, address='gui_data', ip=location.hostname) {
 		super(port, address, ip)
 
         this.buffers = new Array();
@@ -109,8 +109,11 @@ export default class BelaData extends BelaWebSocket {
                 if(err)
                         return;
                 let idx = this.newBuffer['id'];
+                let count = this.buffers[idx] && "undefined" !== typeof(this.buffers[idx].count) ? this.buffers[idx].count + 1 : 0;
                 this.buffers[idx] = this.newBuffer['data'];
                 this.buffers[idx].type = type;
+                this.buffers[idx].count = count;
+                this.buffers[idx].ts = performance.now();
                 this.bufferReady = true;
 
                 this.target.dispatchEvent( new CustomEvent('buffer-ready', { detail: this.newBuffer['id'] }) );

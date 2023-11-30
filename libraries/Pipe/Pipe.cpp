@@ -1,7 +1,12 @@
 #include "Pipe.h"
-#include <xenomai_wraps.h>
+#include <RtWrappers.h>
 #include <stdexcept>
 #include <sys/select.h>
+#include <errno.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+
 std::string Pipe::defaultName;
 
 Pipe::Pipe(const std::string& pipeName, size_t size, bool newBlockingRt, bool newBlockingNonRt)
@@ -14,11 +19,11 @@ bool Pipe::setup(const std::string& pipeName, size_t size, bool newBlockingRt, b
 {
 	if(fd)
 		cleanup();
-	fd = 0;
+	fd = -1;
 	pipeSize = size;
 
 	name = "p_" + pipeName;
-	int ret = createXenomaiPipe(name.c_str(), pipeSize);
+	int ret = createBelaRtPipe(name.c_str(), pipeSize);
 	if(ret < 0)
 	{
 		fprintf(stderr, "Unable to create pipe %s with %u bytes: (%i) %s\n", name.c_str(), pipeSize, ret, strerror(ret));
@@ -46,14 +51,14 @@ bool Pipe::setup(const std::string& pipeName, size_t size, bool newBlockingRt, b
 void Pipe::setBlockingRt(bool blocking)
 {
 	blockingRt = blocking;
-	int flags = __wrap_fcntl(pipeSocket, F_GETFL);
+	int flags = BELA_RT_WRAP(fcntl(pipeSocket, F_GETFL));
 	if(blocking)
 	{
 		flags ^= O_NONBLOCK;
 	} else {
 		flags |= O_NONBLOCK;
 	}
-	if(int ret = __wrap_fcntl(pipeSocket, F_SETFL, flags))
+	if(int ret = BELA_RT_WRAP(fcntl(pipeSocket, F_SETFL, flags)))
 	{
 		fprintf(stderr, "Unable to set socket non blocking\n");
 	}
@@ -88,7 +93,7 @@ void Pipe::setTimeoutMsNonRt(double timeoutMs)
 void Pipe::cleanup()
 {
 	close(fd);
-	__wrap_close(pipeSocket);
+	BELA_RT_WRAP(close(pipeSocket));
 }
 
 bool Pipe::_writeNonRt(void* ptr, size_t size)
@@ -103,7 +108,7 @@ bool Pipe::_writeNonRt(void* ptr, size_t size)
 
 bool Pipe::_writeRt(void* ptr, size_t size)
 {
-	ssize_t ret = __wrap_send(pipeSocket, (void*)ptr, size, 0);
+	ssize_t ret = BELA_RT_WRAP(send(pipeSocket, (void*)ptr, size, 0));
 	if(ret < 0 || ret != size)
 	{
 		return false;
@@ -125,7 +130,7 @@ ssize_t Pipe::_readRtNonRt(void* ptr, size_t size, bool rt)
 {
 	bool blocking = rt ? blockingRt : blockingNonRt;
 	double timeoutMs = rt ? timeoutMsRt : timeoutMsNonRt;
-	int (*_select)(int, fd_set*, fd_set*, fd_set*, struct timeval*) = rt ? __wrap_select : select;
+	int (*_select)(int, fd_set*, fd_set*, fd_set*, struct timeval*) = rt ? BELA_RT_WRAP(select : select);
 	int file = rt ? pipeSocket : fd;
 	bool doIt = false;
 	int ret = 0;
@@ -143,7 +148,7 @@ ssize_t Pipe::_readRtNonRt(void* ptr, size_t size, bool rt)
 	}
 	if(!blocking || doIt){
 		if(rt)
-			ret = __wrap_recv(file, ptr, size, 0);
+			ret = BELA_RT_WRAP(recv(file, ptr, size, 0));
 		else
 			ret = read(file, ptr, size);
 	}

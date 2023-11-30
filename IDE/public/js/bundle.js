@@ -763,7 +763,7 @@ function fileOpenedOrChanged(data, changed) {
 	// and we arenot ignoring it
 	if (project === models.project.getKey('currentProject') && fileName === models.project.getKey('fileName') && clientId != socket.id && !models.project.getKey('openElsewhere') && !models.project.getKey('readOnly')) {
 		if (changed) fileChangedPopup(fileName);else enterReadonlyPopup(fileName);
-	}
+	} else setReadOnlyStatus(false);
 }
 
 // run-on-boot
@@ -823,6 +823,16 @@ function setModifiedTimeInterval(mtime) {
 	}, 5000);
 }
 
+function reopenFile() {
+	// Not sure how to get the name of the current file without passing it in
+	// So we actually reopen the project instead.
+	var data = {
+		func: 'openProject',
+		currentProject: models.project.getKey('currentProject'),
+		timestamp: performance.now()
+	};
+	socket.emit('project-event', data);
+}
 // current file changed
 var fileChangedPopupVisible = false;
 function fileChangedPopup(fileName) {
@@ -833,13 +843,7 @@ function fileChangedPopup(fileName) {
 	popup.twoButtons(strings, function (e) {
 		fileChangedPopupVisible = false;
 		e.preventDefault();
-		var data = {
-			func: 'openProject',
-			currentProject: models.project.getKey('currentProject'),
-			timestamp: performance.now()
-		};
-		socket.emit('project-event', data);
-		consoleView.emit('openNotification', data);
+		reopenFile();
 	}, function () {
 		fileChangedPopupVisible = false;
 		editorView.emit('upload', editorView.getData());
@@ -883,7 +887,8 @@ function exitReadonlyPopup() {
 	// on Submit:
 	function (e) {
 		setReadOnlyStatus(false);
-		window.location.reload();
+		e.preventDefault();
+		reopenFile();
 	},
 	// on Cancel:
 	function () {
@@ -5111,8 +5116,20 @@ var ToolbarView = function (_View) {
 			$('[data-toolbar-controltext2]').html('');
 		});
 
-		$('[data-toolbar-scope]').on('click', function () {
-			window.open('scope');
+		var openUrl = function openUrl(url, evt) {
+			// set a target name so that the same tab is used if it was
+			// previously opened
+			var target = location.host + "/url";
+			if (evt) {
+				// if a modifier is pressed, then just "open" it and the
+				// browser will figure out what the modifier means (e.g.: new
+				// tab vs new window)
+				if (evt.altKey || evt.ctrlKey || evt.shiftKey || evt.metaKey) target = undefined;
+			}
+			window.open(url, target);
+		};
+		$('[data-toolbar-scope]').on('click', function (evt) {
+			openUrl('scope', evt);
 		});
 
 		$('[data-toolbar-gui]').mouseover(function () {
@@ -5121,9 +5138,8 @@ var ToolbarView = function (_View) {
 			$('[data-toolbar-controltext2]').html('');
 		});
 
-		$('[data-toolbar-gui]').on('click', function () {
-			// window.open('gui');
-			window.open('gui');
+		$('[data-toolbar-gui]').on('click', function (evt) {
+			openUrl('gui', evt);
 		});
 		return _this;
 	}

@@ -104,6 +104,8 @@ void Scope::setPlotMode(){
     
     // setup the input buffer
     frameWidth = pixelWidth/upSampling;
+    if(0 == frameWidth)
+	    frameWidth = 1; // avoid divides by zero
 	if(TIME_DOMAIN == plotMode) {
 		channelWidth = frameWidth * FRAMES_STORED;
 	} else {
@@ -112,7 +114,7 @@ void Scope::setPlotMode(){
     buffer.resize(numChannels*channelWidth);
     
     // setup the output buffer
-    outBuffer.resize(numChannels*frameWidth);
+    outBuffer.resize(numChannels * frameWidth  + kTimestampSlots);
     
     // reset the trigger
     triggerPointer = 0;
@@ -201,7 +203,7 @@ void Scope::postlog(){
 	isUsingBuffer = false;
     writePointer = (writePointer+1)%channelWidth;
 	
-    if (logCount++ > TRIGGER_LOG_COUNT){
+    if (logCount++ > TRIGGER_LOG_COUNT || downSampling > TRIGGER_LOG_COUNT){
         logCount = 0;
         scopeTriggerTask->schedule();
     }
@@ -237,13 +239,58 @@ bool Scope::triggered(){
 	return false;
 }
 
+void Scope::outBufferSetTimestamp(){
+	memcpy(outBuffer.data(), &timestamp, sizeof(timestamp));
+	outBufferSize = 0;
+}
+
+void Scope::outBufferAppendData(size_t startptr, size_t endptr, size_t outChannelWidth){
+	if(endptr > startptr) {
+		for(size_t i = 0; i < numChannels; ++i){
+			std::copy(&buffer[channelWidth*i+startptr], &buffer[channelWidth*i+endptr], outBuffer.begin()+(i*outChannelWidth) + kTimestampSlots + outBufferSize);
+		}
+		outBufferSize += endptr - startptr;
+	} else {
+		for(size_t i = 0; i < numChannels; ++i){
+			std::copy(&buffer[channelWidth*i+startptr], &buffer[channelWidth*(i+1)], outBuffer.begin()+(i*outChannelWidth) + kTimestampSlots + outBufferSize);
+			std::copy(&buffer[channelWidth*i], &buffer[channelWidth*i+endptr], outBuffer.begin()+((i+1)*outChannelWidth-endptr) + kTimestampSlots + outBufferSize);
+		}
+		outBufferSize += endptr + channelWidth - startptr;
+	}
+}
+
+void Scope::outBufferSend(){
+	size_t elems = kTimestampSlots + outBufferSize * numChannels;
+	size_t bytes = sizeof(outBuffer[0]) * elems;
+	ws_server->sendRt("scope_data", outBuffer.data(), bytes);
+}
+
 void Scope::triggerTimeDomain(){
 // printf("do trigger %i, %i\n", readPointer, writePointer);
     // iterate over the samples between the read and write pointers and check for / deal with triggers
+	// target approx 30 Hz
+	size_t numRollSamples = sampleRate / 30 / downSampling;
+	if(!numRollSamples)
+		numRollSamples = 1;
     while (readPointer != writePointer){
-        
-        // if we are currently listening for a trigger
-        if (triggerPrimed){
+	timestamp++;
+	if(downSampling > 1 && X_NORMAL != xAxisBehaviour)
+	{
+		// send "rolling" blocks without waiting for a trigger
+		rollPtr++;
+		if(rollPtr >= numRollSamples)
+		{
+			rollPtr = 0;
+			isUsingOutBuffer = true;
+			isUsingBuffer = true;
+			outBufferSetTimestamp();
+			outBufferAppendData((readPointer - numRollSamples + channelWidth) % channelWidth , readPointer % channelWidth, numRollSamples);
+			outBufferSend();
+			isUsingBuffer = false;
+			isUsingOutBuffer = false;
+		}
+	} else if (triggerPrimed){
+            //if we are currently listening for a trigger
             
             // if we crossed the trigger threshold
             if (triggered()){
@@ -290,24 +337,13 @@ void Scope::triggerTimeDomain(){
 					// copy the previous to next frameWidth/2.0f samples into the outBuffer
 					int startptr = (triggerPointer-(int)(frameWidth/2.0f) + channelWidth)%channelWidth;
 					int endptr = (startptr + frameWidth)%channelWidth;
-					
-					if (endptr > startptr){
-						for (int i=0; i<numChannels; i++){
-							std::copy(&buffer[channelWidth*i+startptr], &buffer[channelWidth*i+endptr], outBuffer.begin()+(i*frameWidth));
-						}
-					} else {
-						for (int i=0; i<numChannels; i++){
-							std::copy(&buffer[channelWidth*i+startptr], &buffer[channelWidth*(i+1)], outBuffer.begin()+(i*frameWidth));
-							std::copy(&buffer[channelWidth*i], &buffer[channelWidth*i+endptr], outBuffer.begin()+((i+1)*frameWidth-endptr));
-						}
-					}
+
+					outBufferSetTimestamp();
+					outBufferAppendData(startptr, endptr, frameWidth);
 					isUsingBuffer = false;
 					
 					// the whole frame has been saved in outBuffer, so send it
-					// sendBufferTask.schedule((void*)&outBuffer[0], outBuffer.size()*sizeof(float));
-					// rt_printf("scheduling sendBufferTask size: %i\n", outBuffer.size());
-					ws_server->sendRt("scope_data", outBuffer.data(), outBuffer.size() * sizeof(float));
-					
+					outBufferSend();
 					isUsingOutBuffer = false;
                 }
 				
@@ -508,6 +544,8 @@ void Scope::setSetting(std::wstring setting, float value){
 	} else if (setting.compare(L"xOffset") == 0){
         xOffset = (int)value;
         setXParams();
+	} else if (setting.compare(L"xAxisBehaviour") == 0){
+		xAxisBehaviour = (XAxisBehaviour)value;
 	} else if (setting.compare(L"upSampling") == 0){
 		stop();
         upSampling = (int)value;
@@ -530,7 +568,7 @@ void Scope::setSetting(std::wstring setting, float value){
 	} else if (setting.compare(L"FFTYAxis") == 0){
         FFTYAxis = (int)value;
 	} else if (setting.compare(L"numChannels") == 0){
-		numChannels = (int)value;
+		numChannels = value;
 	} else if (setting.compare(L"sampleRate") == 0){
 		sampleRate = value;
 	}

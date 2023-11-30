@@ -32,6 +32,11 @@ class Scope{
 		NEGATIVE, ///< Trigger when crossing the threshold and the signal is decreasing
 		BOTH, ///< Trigger on any crossing of the threshold.
 	} TriggerSlope;
+	typedef enum {
+		X_NORMAL, ///< X-axis normal
+		X_INCREMENTAL, ///< X-axis incremental
+		X_ROLLING, ///< X-axis rolling
+	} XAxisBehaviour;
 
         Scope();
 	Scope(unsigned int numChannels, float sampleRate);
@@ -102,13 +107,16 @@ class Scope{
         void scope_control_connected();
         void scope_control_data(const char* data);
         void parse_settings(std::shared_ptr<JSONValue> value);
+	void outBufferSetTimestamp();
+	void outBufferAppendData(size_t startptr, size_t endptr, size_t outChannelWidth);
+	void outBufferSend();
         
 	bool volatile isUsingOutBuffer;
 	bool volatile isUsingBuffer;
 	bool volatile isResizing;
 		
         // settings
-        int numChannels;
+        size_t numChannels;
         float sampleRate;
         int pixelWidth;
         int frameWidth;
@@ -116,6 +124,7 @@ class Scope{
         TriggerMode triggerMode;
         unsigned int triggerChannel;
         TriggerSlope triggerDir;
+	XAxisBehaviour xAxisBehaviour = X_NORMAL;
         float triggerLevel;
         int xOffset;
         int xOffsetSamples;
@@ -132,6 +141,10 @@ class Scope{
         // buffers
         std::vector<float> buffer;
         std::vector<float> outBuffer;
+	uint32_t timestamp = 0;
+	size_t outBufferSize;
+	size_t rollPtr = 0;
+	static constexpr size_t kTimestampSlots = sizeof(timestamp) / sizeof(outBuffer[0]);
         
         // pointers
         int writePointer;

@@ -4,30 +4,18 @@
 #include <iostream>
 #include <string.h>
 
-#ifdef XENOMAI_SKIN_native
-#include <native/task.h>
-#endif
-
-#ifdef XENOMAI_SKIN_posix
 #include <pthread.h>
-extern int gXenomaiInited;
-#endif
-
-#include "../include/xenomai_wraps.h"
+#include "../include/RtWrappers.h"
+#include "../include/RtLock.h"
 
 using namespace std;
 //
 // Data structure to keep track of auxiliary tasks we
 // can schedule
 typedef struct {
-#ifdef XENOMAI_SKIN_native
-	RT_TASK task;
-#endif
-#ifdef XENOMAI_SKIN_posix
 	pthread_t task;
-	pthread_cond_t cond;
-	pthread_mutex_t mutex;
-#endif
+	RtConditionVariable* cond;
+	RtMutex* mutex;
 	void (*argfunction)(void*);
 	char *name;
 	int priority;
@@ -49,15 +37,8 @@ void auxiliaryTaskLoop(void *taskStruct);
 extern unsigned int gAuxiliaryTaskStackSize;
 AuxiliaryTask Bela_createAuxiliaryTask(void (*functionToCall)(void* args), int priority, const char *name, void* args)
 {
-#if XENOMAI_MAJOR == 3
-	// if a program calls this before xenomai is inited, let's init it here with empty arguments.
-	if(!gXenomaiInited)
-	{
-		fprintf(stderr, "Error: You should call Bela_initAudio() before calling Bela_createAuxiliaryTask()\n");
-		return 0;
-	}
-#endif
-	InternalAuxiliaryTask *newTask = (InternalAuxiliaryTask*)malloc(sizeof(InternalAuxiliaryTask));
+	Bela_initRtBackend();
+	InternalAuxiliaryTask *newTask = (InternalAuxiliaryTask*)calloc(1, sizeof(InternalAuxiliaryTask));
 
 	// Populate the rest of the data structure
 	newTask->argfunction = functionToCall;
@@ -67,28 +48,24 @@ AuxiliaryTask Bela_createAuxiliaryTask(void (*functionToCall)(void* args), int p
 	newTask->args = args;
 	// Attempt to create the task
 	unsigned int stackSize = gAuxiliaryTaskStackSize;
-#ifdef XENOMAI_SKIN_native
-	if(int ret = rt_task_create(&(newTask->task), name, stackSize, priority, T_JOINABLE | T_FPU))
-#endif
-#ifdef XENOMAI_SKIN_posix
-	if(int ret = __wrap_pthread_cond_init(&(newTask->cond), NULL))
+	int ret;
+	try {
+		newTask->cond = new RtConditionVariable;
+		newTask->mutex = new RtMutex;
+		ret = 0;
+	} catch (std::exception& e)
 	{
-		fprintf(stderr, "Error: unable to create condition variable for auxiliary task %s : (%d) %s\n", name, ret, strerror(ret));
-		free(newTask);
-		return 0;
-	}
-	if(int ret = __wrap_pthread_mutex_init(&(newTask->mutex), NULL))
-	{
-		fprintf(stderr, "Error: unable to initialize mutex for auxiliary task %s : (%d) %s\n", name, ret, strerror(-ret));
-		free(newTask);
-		return 0;
+		ret = 1;
 	}
 	// Upon calling this function, the thread will start and immediately wait
 	// on the condition variable.
-	if(int ret = create_and_start_thread(&(newTask->task), name, priority, stackSize,(pthread_callback_t*)auxiliaryTaskLoop, newTask))
-#endif
+	if(!ret)
+		ret = create_and_start_thread(&(newTask->task), name, priority, stackSize, NULL, (pthread_callback_t*)auxiliaryTaskLoop, newTask);
+	if(ret)
 	{
 		fprintf(stderr, "Error: unable to create auxiliary task %s : (%d) %s\n", name, ret, strerror(ret));
+		delete newTask->cond;
+		delete newTask->mutex;
 		free(newTask);
 		return 0;
 	}
@@ -108,16 +85,6 @@ int Bela_scheduleAuxiliaryTask(AuxiliaryTask task)
 		Bela_startAuxiliaryTask(task); // is started (or ready to be resumed), but it probably is the fastest.
                                            // A safer approach would use rt_task_inquire()
 	}
-#ifdef XENOMAI_SKIN_native
-	rt_task_resume(&taskToSchedule->task);
-	// the return value here is hardcoded: returns success
-	// regardless of whether the task is actually scheduled or was
-	// already running. Finding out whether it was successful or not
-	// would require some overhead, through a call to rt_task_inquire,
-	// so we leave it out for now.
-	return 0;
-#endif
-#ifdef XENOMAI_SKIN_posix
 	if(!taskToSchedule->started)
 	{
 		// the task has not yet had a chance to run.
@@ -125,39 +92,39 @@ int Bela_scheduleAuxiliaryTask(AuxiliaryTask task)
 		// until the other starts.
 		struct sched_param param;
 		int policy;
-		int ret = __wrap_pthread_getschedparam(taskToSchedule->task,
-				&policy, &param);
+		int ret = BELA_RT_WRAP(pthread_getschedparam(taskToSchedule->task,
+				&policy, &param));
 		if(!ret)
 		{
 			// set the priority to maximum
 			int originalPriority = param.sched_priority;
-			param.sched_priority = __wrap_sched_get_priority_max(SCHED_FIFO);
-			__wrap_pthread_setschedparam(taskToSchedule->task,
-					SCHED_FIFO, &param);
+			param.sched_priority = BELA_RT_WRAP(sched_get_priority_max(SCHED_FIFO));
+			BELA_RT_WRAP(pthread_setschedparam(taskToSchedule->task,
+					SCHED_FIFO, &param));
 			// just in case we have the same priority, let the
 			// other go first
-			__wrap_pthread_yield();
+			BELA_RT_WRAP(pthread_yield());
 			if(!taskToSchedule->started)
 				fprintf(stderr, "Didn't work\n");
 			// by the time we are here, the other thread has run, set the
 			// started flag, and is now waiting for the cond
 			// So, restore its schedparams
 			param.sched_priority = originalPriority;
-			__wrap_pthread_setschedparam(taskToSchedule->task,
-					policy, &param);
+			BELA_RT_WRAP(pthread_setschedparam(taskToSchedule->task,
+					policy, &param));
 		}
 	}
-	if(int ret = __wrap_pthread_mutex_trylock(&taskToSchedule->mutex))
+	if(taskToSchedule->mutex->try_lock())
 	{
-		// If we cannot get the lock, then the task is probably still running.
-		return ret;
-	} else {
-		ret = __wrap_pthread_cond_signal(&taskToSchedule->cond);
-		__wrap_pthread_mutex_unlock(&taskToSchedule->mutex);
+		taskToSchedule->cond->notify_one();
+		taskToSchedule->mutex->unlock();
 		return 0;
+	} else {
+		// If we cannot get the lock, then the task is probably still running.
+		return 1;
 	}
-#endif
 }
+
 AuxiliaryTask Bela_runAuxiliaryTask(void (*callback)(void*), int priority, void* arg)
 {
 	char name[11];
@@ -175,15 +142,10 @@ AuxiliaryTask Bela_runAuxiliaryTask(void (*callback)(void*), int priority, void*
 
 static void suspendCurrentTask(InternalAuxiliaryTask* task)
 {
-#ifdef XENOMAI_SKIN_native
-	rt_task_suspend(NULL);
-#endif
-#ifdef XENOMAI_SKIN_posix
-	__wrap_pthread_mutex_lock(&task->mutex);
+	task->mutex->lock();
 	task->started = true;
-	__wrap_pthread_cond_wait(&task->cond, &task->mutex);
-	__wrap_pthread_mutex_unlock(&task->mutex);
-#endif
+	task->cond->wait(*task->mutex);
+	task->mutex->unlock();
 }
 // Calculation loop that can be used for other tasks running at a lower
 // priority than the audio thread. Simple wrapper for Xenomai calls.
@@ -225,16 +187,8 @@ int Bela_startAuxiliaryTask(AuxiliaryTask task){
 	taskStruct = (InternalAuxiliaryTask *)task;
 	if(taskStruct->started == true)
 		return 0;
-#ifdef XENOMAI_SKIN_native
-	if(int ret = rt_task_start(&(taskStruct->task), &auxiliaryTaskLoop, taskStruct)) {
-		fprintf(stderr,"Error: unable to start Xenomai task %s: %s\n", taskStruct->name, strerror(-ret));
-		return -1;
-	}
-#endif
-#ifdef XENOMAI_SKIN_posix
 	// The task has already been started upon creation.
 	// It is currently waiting on a condition variable.
-#endif
 	return 0;
 }
 
@@ -265,19 +219,13 @@ void Bela_stopAllAuxiliaryTasks()
 		// each thread should be checking on Bela_stopRequested(), which
 		// should return true at this point. Let's make sure it does:
 		Bela_requestStop();
-#ifdef XENOMAI_SKIN_native
-		rt_task_resume(&taskStruct->task);
-		rt_task_join(&(taskStruct->task));
-#endif
-#ifdef XENOMAI_SKIN_posix
 		// REALLY lock the lock: we really must call _cond_signal here
-		__wrap_pthread_mutex_lock(&taskStruct->mutex);
-		__wrap_pthread_cond_signal(&taskStruct->cond);
-		__wrap_pthread_mutex_unlock(&taskStruct->mutex);
+		taskStruct->mutex->lock();
+		taskStruct->cond->notify_one();
+		taskStruct->mutex->unlock();
 
 		void* threadReturnValue;
-		__wrap_pthread_join(taskStruct->task, &threadReturnValue);
-#endif
+		BELA_RT_WRAP(pthread_join(taskStruct->task, &threadReturnValue));
 	}
 }
 
@@ -289,15 +237,10 @@ void Bela_deleteAllAuxiliaryTasks()
 		InternalAuxiliaryTask *taskStruct = *it;
 
 		// Delete the task
-#ifdef XENOMAI_SKIN_native
-		rt_task_delete(&taskStruct->task);
-#endif
-#ifdef XENOMAI_SKIN_posix
 		pthread_cancel(taskStruct->task);
-		__wrap_pthread_cond_destroy(&taskStruct->cond);
-		__wrap_pthread_mutex_destroy(&taskStruct->mutex);
-#endif
 		// Free the name string and the struct itself
+		delete taskStruct->mutex;
+		delete taskStruct->cond;
 		free(taskStruct->name);
 		free(taskStruct);
 	}

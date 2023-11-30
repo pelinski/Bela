@@ -323,6 +323,8 @@ var BackgroundView = function (_View) {
 
 		var _this = _possibleConstructorReturn(this, (BackgroundView.__proto__ || Object.getPrototypeOf(BackgroundView)).call(this, className, models));
 
+		_this.darkMode = models[1].getKey('darkMode');
+		_this.showLabels = models[1].getKey('showLabels');
 		var saveCanvas = document.getElementById('saveCanvas');
 		_this.canvas = document.getElementById('scopeBG');
 		saveCanvas.addEventListener('click', function () {
@@ -341,7 +343,7 @@ var BackgroundView = function (_View) {
 			canvas.height = window.innerHeight;
 			var ctx = canvas.getContext('2d');
 			ctx.rect(0, 0, canvas.width, canvas.height);
-			ctx.fillStyle = "white";
+			ctx.fillStyle = this.darkMode ? "black" : "white";
 			ctx.fill();
 			//ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -357,21 +359,23 @@ var BackgroundView = function (_View) {
 			//console.log(xTime);
 
 			//faint lines
-			ctx.strokeStyle = '#000000';
-			ctx.fillStyle = "grey";
+			ctx.strokeStyle = this.darkMode ? '#fff' : '#000';
+			ctx.fillStyle = this.darkMode ? '#fff' : '#000';
 			ctx.font = "14px inconsolata";
 			ctx.textAlign = "center";
-			ctx.lineWidth = 0.2;
+			ctx.lineWidth = this.darkMode ? 1 : 0.2;
 			ctx.setLineDash([]);
 			ctx.beginPath();
-			ctx.fillText(0, canvas.width / 2, canvas.height / 2 + 11);
+			if (this.showLabels) ctx.fillText(0, canvas.width / 2, canvas.height / 2 + 11);
 			for (var i = 1; i < numVLines; i++) {
 				ctx.moveTo(canvas.width / 2 + i * xPixels, 0);
 				ctx.lineTo(canvas.width / 2 + i * xPixels, canvas.height);
-				ctx.fillText((i * mspersample).toPrecision(2), canvas.width / 2 + i * xPixels, canvas.height / 2 + 11);
+				var val = i * mspersample;
+				if (val < 10) val = val.toFixed(2);else if (val < 100) val = val.toFixed(1);else val = val.toFixed(0);
+				if (this.showLabels) ctx.fillText(val, canvas.width / 2 + i * xPixels, canvas.height / 2 + 11);
 				ctx.moveTo(canvas.width / 2 - i * xPixels, 0);
 				ctx.lineTo(canvas.width / 2 - i * xPixels, canvas.height);
-				ctx.fillText((-i * mspersample).toPrecision(2), canvas.width / 2 - i * xPixels, canvas.height / 2 + 11);
+				if (this.showLabels) ctx.fillText("-" + val, canvas.width / 2 - i * xPixels, canvas.height / 2 + 11);
 			}
 
 			var numHLines = 6;
@@ -416,6 +420,7 @@ var BackgroundView = function (_View) {
 			//dashed lines
 			ctx.beginPath();
 			ctx.setLineDash([2, 5]);
+			ctx.lineWidth = this.darkMode ? 0.5 : 0.2;
 
 			ctx.moveTo(0, canvas.height * 3 / 4);
 			ctx.lineTo(canvas.width, canvas.height * 3 / 4);
@@ -457,7 +462,7 @@ var BackgroundView = function (_View) {
 			var numVlines = 10;
 
 			//faint lines
-			ctx.strokeStyle = '#000000';
+			ctx.strokeStyle = this.darkMode ? '#fff' : '#000';
 			ctx.fillStyle = "grey";
 			ctx.font = "14px inconsolata";
 			ctx.textAlign = "center";
@@ -478,7 +483,7 @@ var BackgroundView = function (_View) {
 						val = (Math.pow(Math.E, -Math.log(1 / window.innerWidth) * i / numVlines) * (this.models[0].getKey('sampleRate') / (2 * window.innerWidth)) * (data.upSampling / data.downSampling)).toFixed(0);
 					}
 
-					ctx.fillText(val, i * window.innerWidth / numVlines, canvas.height - 2);
+					if (this.showLabels) ctx.fillText(val, i * window.innerWidth / numVlines, canvas.height - 2);
 				}
 			}
 
@@ -501,6 +506,18 @@ var BackgroundView = function (_View) {
 			ctx.lineTo(canvas.width, canvas.height);
 
 			ctx.stroke();
+		}
+	}, {
+		key: '_showLabels',
+		value: function _showLabels(value, data) {
+			this.showLabels = value;
+			this.repaintBG(this.models[0].getKey('xTimeBase'), this.models[0]._getData());
+		}
+	}, {
+		key: '_darkMode',
+		value: function _darkMode(value, data) {
+			this.darkMode = value;
+			this.repaintBG(this.models[0].getKey('xTimeBase'), this.models[0]._getData());
 		}
 	}, {
 		key: '__xTimeBase',
@@ -540,7 +557,7 @@ var BackgroundView = function (_View) {
 
 module.exports = BackgroundView;
 
-},{"./View":7}],3:[function(require,module,exports){
+},{"./View":6}],3:[function(require,module,exports){
 'use strict';
 
 var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -557,12 +574,11 @@ function ChannelConfig() {
   this.yAmplitude = 1;
   this.yOffset = 0;
   this.color = '0xff0000';
-  this.lineWeight = 1.5;
+  this.lineWeight = 5;
   this.enabled = 1;
 }
 
-var channelConfig = [new ChannelConfig()];
-var colours = ['0xff0000', '0x0000ff', '0x00ff00', '0xff8800', '0xff00ff', '0x00ffff', '0x888800', '0xff8888'];
+var channelConfig = [];
 
 var tdGainVal = 1,
     tdOffsetVal = 0,
@@ -591,7 +607,11 @@ var ChannelView = function (_View) {
   function ChannelView(className, models) {
     _classCallCheck(this, ChannelView);
 
-    return _possibleConstructorReturn(this, (ChannelView.__proto__ || Object.getPrototypeOf(ChannelView)).call(this, className, models));
+    var _this = _possibleConstructorReturn(this, (ChannelView.__proto__ || Object.getPrototypeOf(ChannelView)).call(this, className, models));
+
+    _this.darkMode = _this.models[1].getKey('darkMode');
+    _this.colors = ['0xff0000', '0x94d6ff', '0x00ff00', '0xff8800', '0xff00ff', '0x00ffff', '0x888800', '0xff8888'];
+    return _this;
   }
 
   // UI events
@@ -704,6 +724,11 @@ var ChannelView = function (_View) {
       }
     }
   }, {
+    key: '_darkMode',
+    value: function _darkMode(val) {
+      this.darkMode = val;
+    }
+  }, {
     key: '_numChannels',
     value: function _numChannels(val) {
       var numChannels = val;
@@ -714,14 +739,19 @@ var ChannelView = function (_View) {
         }
       } else if (numChannels > channelConfig.length) {
         while (numChannels > channelConfig.length) {
-          channelConfig.push(new ChannelConfig());
-          channelConfig[channelConfig.length - 1].color = colours[(channelConfig.length - 1) % colours.length];
-          var el = $('.channel-view-0').clone(true).prop('class', 'channel-view-' + channelConfig.length).appendTo($('.control-section.channel'));
+          var cf = new ChannelConfig();
+          channelConfig.push(cf);
+          cf.color = this.colors[(channelConfig.length - 1) % this.colors.length];
+          var el = $('.channel-view-template').clone(true).prop('class', 'channel-view-' + channelConfig.length).prop('style', '') // remove display: none
+          .appendTo($('.control-section.channel'));
           el.find('[data-channel-name]').html('Channel ' + channelConfig.length);
           el.find('input').each(function () {
             $(this).data('channel', channelConfig.length - 1);
           });
-          el.find('input[type=color]').val(colours[(channelConfig.length - 1) % colours.length].replace('0x', '#'));
+          for (var key in cf) {
+            var prop = el.find('input[data-key=' + key + ']');
+            if ('color' === key) prop.val(cf.color.replace('0x', '#'));else prop.val(cf[key]);
+          }
         }
       }
       this.emit('channelConfig', channelConfig);
@@ -784,7 +814,7 @@ $.fn.filterByData = function (prop, val) {
   });
 };
 
-},{"./View":7}],4:[function(require,module,exports){
+},{"./View":6}],4:[function(require,module,exports){
 'use strict';
 
 var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -817,21 +847,26 @@ var ControlView = function (_View) {
     $('body').on('keydown', function (e) {
       return _this.keyHandler(e);
     });
+    _this.addGenericHandlers();
     return _this;
   }
 
   _createClass(ControlView, [{
-    key: 'toggleControls',
-    value: function toggleControls() {
-      if (controls) {
-        controls = false;
-        $('#control-panel').addClass('hidden');
-        $('.overlay').removeClass('active');
-      } else {
-        controls = true;
+    key: 'controlsVisibility',
+    value: function controlsVisibility(show) {
+      controls = show;
+      if (show) {
         $('#control-panel').removeClass('hidden');
         $('.overlay').addClass('active');
+      } else {
+        $('#control-panel').addClass('hidden');
+        $('.overlay').removeClass('active');
       }
+    }
+  }, {
+    key: 'toggleControls',
+    value: function toggleControls() {
+      this.controlsVisibility(!controls);
     }
   }, {
     key: 'keyHandler',
@@ -865,19 +900,22 @@ var ControlView = function (_View) {
     value: function buttonClicked($element, e) {
       if ($element.data().key === 'upSampling') {
         if (downSampling > 1) {
-          downSampling -= 1;
+          downSampling /= 2;
           this.emit('settings-event', 'downSampling', downSampling);
         } else {
-          upSampling += 1;
-          this.emit('settings-event', 'upSampling', upSampling);
+          if (upSampling < 64) {
+            // an arbitrary limit: higher than this and pileups start happening
+            upSampling *= 2;
+            this.emit('settings-event', 'upSampling', upSampling);
+          }
         }
         // this._upSampling();
       } else if ($element.data().key === 'downSampling') {
         if (upSampling > 1) {
-          upSampling -= 1;
+          upSampling /= 2;
           this.emit('settings-event', 'upSampling', upSampling);
         } else {
-          downSampling += 1;
+          downSampling *= 2;
           this.emit('settings-event', 'downSampling', downSampling);
         }
         // this._downSampling();
@@ -928,6 +966,30 @@ var ControlView = function (_View) {
       }
     }
   }, {
+    key: 'msDiv',
+    value: function msDiv() {
+      var time = xTime * downSampling / upSampling;
+      if (time < 10) time = time.toFixed(2);else if (time < 100) time = time.toFixed(1);else time = time.toFixed(0);
+      return time;
+    }
+  }, {
+    key: 'hzDiv',
+    value: function hzDiv() {
+      var hz = sampleRate / 20 * upSampling / downSampling;
+      return hz.toFixed(0);
+    }
+  }, {
+    key: 'updateUnitDisplay',
+    value: function updateUnitDisplay(data) {
+      var unitDisplay = void 0;
+      if (data.plotMode == 0) {
+        unitDisplay = this.msDiv();
+      } else if (data.plotMode == 1) {
+        unitDisplay = this.hzDiv();
+      }
+      $('.xUnit-display').html(unitDisplay);
+    }
+  }, {
     key: 'plotMode',
     value: function plotMode(val, data) {
       this.emit('plotMode', val, data);
@@ -935,40 +997,29 @@ var ControlView = function (_View) {
         if ($('#control-underlay').hasClass('')) $('#control-underlay').addClass('hidden');
         if ($('#triggerControls').hasClass('hidden')) $('#triggerControls').removeClass('hidden');
         if (!$('#FFTControls').hasClass('hidden')) $('#FFTControls').addClass('hidden');
-        $('.xAxisUnits').html('<p>ms</p>');
-        $('.xUnit-display').html('<p>' + (xTime * downSampling / upSampling).toPrecision(2) + '</p>');
-        $('#zoomUp').html('Zoom in');
-        $('#zoomDown').html('Zoom out');
+        $('.xAxisUnits').html("ms");
       } else if (val == 1) {
         if ($('#control-underlay').hasClass('hidden')) $('#control-underlay').removeClass('hidden');
         if (!$('#trigger-controls').hasClass('hidden')) $('#triggerControls').addClass('hidden');
         if ($('#FFTControls').hasClass('hidden')) $('#FFTControls').removeClass('hidden');
-        $('.xAxisUnits').html('Hz');
-        $('.xUnit-display').html(sampleRate / 20 * upSampling / downSampling);
-        $('#zoomUp').html('Zoom out');
-        $('#zoomDown').html('Zoom in');
+        $('.xAxisUnits').html("Hz");
       }
+      this.updateUnitDisplay(data);
+      $('#zoomUp').html('Zoom in');
+      $('#zoomDown').html('Zoom out');
     }
   }, {
     key: '_upSampling',
     value: function _upSampling(value, data) {
       upSampling = value;
-      if (data.plotMode == 0) {
-        $('.xUnit-display').html('<p>' + (xTime * downSampling / upSampling).toPrecision(2) + '</p>');
-      } else if (data.plotMode == 1) {
-        $('.xUnit-display').html(data.sampleRate / 20 * data.upSampling / data.downSampling);
-      }
+      this.updateUnitDisplay(data);
       $('.zoom-display').html((100 * upSampling / downSampling).toPrecision(4) + '%');
     }
   }, {
     key: '_downSampling',
     value: function _downSampling(value, data) {
       downSampling = value;
-      if (data.plotMode == 0) {
-        $('.xUnit-display').html('<p>' + (xTime * downSampling / upSampling).toPrecision(2) + '</p>');
-      } else if (data.plotMode == 1) {
-        $('.xUnit-display').html('<p>' + (xTime * downSampling / upSampling).toPrecision(2) + '</p>');
-      }
+      this.updateUnitDisplay(data);
     }
   }, {
     key: '_xTimeBase',
@@ -990,24 +1041,42 @@ var ControlView = function (_View) {
       }
     }
   }, {
-    key: '_triggerMode',
-    value: function _triggerMode(value) {
-      this.$elements.filterByData('key', 'triggerMode').val(value);
+    key: 'addGenericHandlers',
+    value: function addGenericHandlers() {
+      var _this2 = this;
+
+      var genericHandlers = ["triggerMode", "triggerChannel", "triggerDir", "triggerLevel", "xAxisBehaviour", "holdOff", "xOffset", "interpolation"];
+
+      var _loop = function _loop(n) {
+        var h = genericHandlers[n];
+        _this2["_" + h] = function (value) {
+          _this2.$elements.filterByData('key', h).val(value);
+        };
+      };
+
+      for (var n = 0; n < genericHandlers.length; ++n) {
+        _loop(n);
+      }
     }
   }, {
-    key: '_triggerChannel',
-    value: function _triggerChannel(value) {
-      this.$elements.filterByData('key', 'triggerChannel').val(value);
+    key: '_xAxisBehaviour',
+    value: function _xAxisBehaviour(value) {
+      this.$elements.filterByData('key', 'xAxisBehaviour').val(value);
     }
   }, {
-    key: '_triggerDir',
-    value: function _triggerDir(value) {
-      this.$elements.filterByData('key', 'triggerDir').val(value);
+    key: '_holdOff',
+    value: function _holdOff(value) {
+      this.$elements.filterByData('key', 'holdOff').val(value);
     }
   }, {
-    key: '_triggerLevel',
-    value: function _triggerLevel(value) {
-      this.$elements.filterByData('key', 'triggerLevel').val(value);
+    key: '_xOffset',
+    value: function _xOffset(value) {
+      this.$elements.filterByData('key', 'xOffset').val(value);
+    }
+  }, {
+    key: '_interpolation',
+    value: function _interpolation(value) {
+      this.$elements.filterByData('key', 'interpolation').val(value);
     }
   }]);
 
@@ -1022,7 +1091,7 @@ $.fn.filterByData = function (prop, val) {
   });
 };
 
-},{"./View":7}],5:[function(require,module,exports){
+},{"./View":6}],5:[function(require,module,exports){
 'use strict';
 
 var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -1131,89 +1200,6 @@ function _equals(a, b, log) {
 }
 
 },{"events":1}],6:[function(require,module,exports){
-'use strict';
-
-var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
-
-function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function _possibleConstructorReturn(self, call) { if (!self) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return call && (typeof call === "object" || typeof call === "function") ? call : self; }
-
-function _inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function, not " + typeof superClass); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, enumerable: false, writable: true, configurable: true } }); if (superClass) Object.setPrototypeOf ? Object.setPrototypeOf(subClass, superClass) : subClass.__proto__ = superClass; }
-
-var View = require('./View');
-
-var SliderView = function (_View) {
-	_inherits(SliderView, _View);
-
-	function SliderView(className, models) {
-		_classCallCheck(this, SliderView);
-
-		var _this = _possibleConstructorReturn(this, (SliderView.__proto__ || Object.getPrototypeOf(SliderView)).call(this, className, models));
-
-		_this.on('set-slider', function (args) {
-			$('#scopeSlider' + args.slider).find('input[type=range]').prop('min', args.min).prop('max', args.max).prop('step', args.step).val(args.value).siblings('input[type=number]').prop('min', args.min).prop('max', args.max).prop('step', args.step).val(args.value).siblings('h1').html(args.name == 'Slider' ? 'Slider ' + args.slider : args.name);
-
-			var inputs = $('#scopeSlider' + args.slider).find('input[type=number]');
-			inputs.filterByData('key', 'min').val(args.min);
-			inputs.filterByData('key', 'max').val(args.max);
-			inputs.filterByData('key', 'step').val(args.step);
-		});
-
-		return _this;
-	}
-
-	_createClass(SliderView, [{
-		key: 'inputChanged',
-		value: function inputChanged($element, e) {
-
-			var key = $element.data().key;
-			var slider = $element.data().slider;
-			var value = $element.val();
-
-			if (key === 'value') {
-				this.emit('slider-value', parseInt(slider), parseFloat(value));
-			} else {
-				$element.closest('div.sliderView').find('input[type=range]').prop(key, value).siblings('input[type=number]').prop(key, value);
-			}
-
-			$element.siblings('input').val(value);
-		}
-	}, {
-		key: '_numSliders',
-		value: function _numSliders(val) {
-			var _this2 = this;
-
-			var el = $('#scopeSlider0');
-
-			$('#sliderColumn').empty();
-
-			if (val == 0) {
-				el.appendTo($('#sliderColumn')).css('display', 'none');
-			}
-
-			for (var i = 0; i < val; i++) {
-				var slider = el.clone(true).prop('id', 'scopeSlider' + i).appendTo($('#sliderColumn')).css('display', 'block');
-
-				slider.find('input').data('slider', i).on('input', function (e) {
-					return _this2.inputChanged($(e.currentTarget), e);
-				});
-			}
-		}
-	}]);
-
-	return SliderView;
-}(View);
-
-module.exports = SliderView;
-
-$.fn.filterByData = function (prop, val) {
-	return this.filter(function () {
-		return $(this).data(prop) == val;
-	});
-};
-
-},{"./View":7}],7:[function(require,module,exports){
 'use strict';
 
 var _createClass = function () { function defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } } return function (Constructor, protoProps, staticProps) { if (protoProps) defineProperties(Constructor.prototype, protoProps); if (staticProps) defineProperties(Constructor, staticProps); return Constructor; }; }();
@@ -1342,28 +1328,70 @@ var View = function (_EventEmitter) {
 
 module.exports = View;
 
-},{"events":1}],8:[function(require,module,exports){
+},{"events":1}],7:[function(require,module,exports){
 'use strict';
 
 var scope = require('./scope-browser');
 
-},{"./scope-browser":9}],9:[function(require,module,exports){
+},{"./scope-browser":8}],8:[function(require,module,exports){
 'use strict';
 
 // worker
 
-var _settings$setData;
+var remoteHost = location.hostname + ":5432";
+var qs = new URLSearchParams(location.search);
+var qsRemoteHost = qs.get("remoteHost");
+var controlDisabled = parseInt(qs.get("controlDisabled"));
+var dataDisabled = parseInt(qs.get("dataDisabled"));
+var forceWebGl = parseInt(qs.get("forceWebGl"));
+var antialias = parseInt(qs.get("antialias"));
+var resolution = qs.get("resolution") ? parseInt(qs.get("resolution")) : 1;
+var darkMode = qs.get("darkMode") ? parseInt(qs.get("darkMode")) : 0;
+var showLabels = qs.get("showLabels") ? parseInt(qs.get("showLabels")) : 1;
 
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
-
+if (qsRemoteHost) remoteHost = qsRemoteHost;
+var wsRemote = "ws://" + remoteHost + "/";
 var worker = new Worker("js/scope-worker.js");
+if (dataDisabled) {
+  $('#ide-cpu').hide();
+  $('#bela-cpu').hide();
+  $('#scopeMouseX').hide();
+  $('#scopeMouseY').hide();
+} else {
+  worker.postMessage({
+    event: 'wsConnect',
+    remote: wsRemote
+  });
+}
 
 // models
 var Model = require('./Model');
 var settings = new Model();
+var tabSettings = new Model();
+var allSettings = [settings, tabSettings];
+
+var toggleDarkMode = function toggleDarkMode() {
+  var newState = !tabSettings.getKey('darkMode');
+  setDarkMode(newState);
+};
+var setDarkMode = function setDarkMode(newState) {
+  tabSettings.setKey('darkMode', newState);
+  if (newState) $('body').addClass('darkMode');else $('body').removeClass('darkMode');
+};
+setDarkMode(darkMode);
+tabSettings.setKey('showLabels', showLabels);
 
 // Pixi.js renderer and stage
-var renderer = PIXI.autoDetectRenderer(window.innerWidth, window.innerHeight, { transparent: true });
+var renderer = PIXI.autoDetectRenderer({
+  width: window.innerWidth,
+  heigh: window.innerHeight,
+  backgroundAlpha: 0,
+  antialias: antialias,
+  forceCanvas: !forceWebGl,
+  autoDensity: true, // somehow makes CSS compensate for increased resolution. Not sure it's needed for us
+  resolution: resolution // sort of oversampling for antialias
+});
+console.log(renderer);
 renderer.view.style.position = "absolute";
 renderer.view.style.display = "block";
 renderer.autoResize = true;
@@ -1371,28 +1399,36 @@ $('.scopeWrapper').append(renderer.view);
 var stage = new PIXI.Container();
 
 // views
-var controlView = new (require('./ControlView'))('scope-controls', [settings]);
-var backgroundView = new (require('./BackgroundView'))('scopeBG', [settings], renderer);
-var channelView = new (require('./ChannelView'))('channelView', [settings]);
-var sliderView = new (require('./SliderView'))('sliderView', [settings]);
+var controlView = new (require('./ControlView'))('scope-controls', allSettings);
+if (dataDisabled) controlView.controlsVisibility(true);
+var backgroundView = dataDisabled ? {} : new (require('./BackgroundView'))('scopeBG', allSettings, renderer);
+var channelView = new (require('./ChannelView'))('channelView', allSettings);
 
 // main bela socket
 var belaSocket = io('/IDE');
 
-// scope websocket
-var ws;
+function sendToWs(obj) {
+  // do not send frameWidth if we are not receiving data,
+  // or the server will get confused
+  if (dataDisabled) delete obj.frameWidth;
+  if (ws && ws.readyState === 1) {
+    var out = void 0;
+    try {
+      var _out = JSON.stringify(obj);
+      ws.send(_out);
+    } catch (e) {
+      console.log('could not stringify settings:', e);
+      return;
+    }
+  }
+}
 
-var wsAddress = "ws://" + location.host + ":5432/scope_control";
-ws = new WebSocket(wsAddress);
 var ws_onerror = function ws_onerror(e) {
   setTimeout(function () {
-    ws = new WebSocket(wsAddress);
-    ws.onerror = ws_onerror;
-    ws.onopen = ws_onopen;
-    ws.onmessage = ws_onmessage;
+    ws = new WebSocket(wsUrl);
+    setWsCbs(ws);
   }, 500);
 };
-ws.onerror = ws_onerror;
 
 var ws_onopen = function ws_onopen() {
   ws.binaryType = 'arraybuffer';
@@ -1400,7 +1436,6 @@ var ws_onopen = function ws_onopen() {
   ws.onclose = ws_onerror;
   ws.onerror = undefined;
 };
-ws.onopen = ws_onopen;
 
 var ws_onmessage = function ws_onmessage(msg) {
   // console.log('recieved scope control message:', msg.data);
@@ -1421,38 +1456,82 @@ var ws_onmessage = function ws_onmessage(msg) {
 
     var obj = settings._getData();
     obj.event = "connection-reply";
-    var out;
-    try {
-      out = JSON.stringify(obj);
-    } catch (e) {
-      console.log('could not stringify settings:', e);
-      return;
-    }
-    if (ws.readyState === 1) ws.send(out);
-  } else if (data.event == 'set-slider') {
-    sliderView.emit('set-slider', data);
+    sendToWs(obj);
+  } else if (data.event == 'update') {
+    // this is a full update due to the setting having changed in a different tab
+    // unfortunately we don't yet have a way to handle it properly without
+    // causing a ping-pong between the two tabs.
+    // Another issue with two clients open receiving data at the same time is
+    // that they need to share the same frameWidth or it's going to be a
+    // problem!
+    // TODO: do it!
   } else if (data.event == 'set-setting') {
     if (settings.getKey(data.setting) !== undefined) {
       settings.setKey(data.setting, data.value);
     }
   }
 };
-ws.onmessage = ws_onmessage;
+function setWsCbs(ws) {
+  ws.onerror = ws_onerror;
+  ws.onopen = ws_onopen;
+  ws.onmessage = ws_onmessage;
+}
+
+var wsUrl = wsRemote + "scope_control";
+// scope websocket
+var ws = void 0;
+if (!controlDisabled) {
+  ws = new WebSocket(wsUrl);
+  setWsCbs(ws);
+}
 
 var paused = false,
     oneShot = false;
 
 // view events
+var kScopeWaiting = 0,
+    kScopeTriggered = 1,
+    kScopePaused = 2,
+    kScopeWaitingOneShot = 3,
+    kScopeDisabled = 4;
+function setScopeStatus(status) {
+  if (dataDisabled) status = kScopeDisabled;
+  var d = $('#scopeStatus');
+  var trigCls = 'scope-status-triggered';
+  var waitCls = 'scope-status-waiting';
+  d.removeClass(trigCls).removeClass(waitCls);
+  switch (status) {
+    case kScopeWaiting:
+      d.addClass(waitCls);
+      d.html('waiting');
+      break;
+    case kScopeTriggered:
+      d.addClass(trigCls);
+      d.html('triggered');
+      break;
+    case kScopePaused:
+      d.addClass(waitCls);
+      d.html('paused');
+      break;
+    case kScopeWaitingOneShot:
+      d.addClass(waitCls);
+      d.html('waiting (one-shot)');
+      break;
+    case kScopeDisabled:
+      d.html('DISABLED');
+      break;
+  }
+}
 controlView.on('settings-event', function (key, value) {
   if (key === 'scopePause') {
     if (paused) {
       paused = false;
       $('.pause-button').html('Pause plotting');
-      $('#scopeStatus').html('waiting');
+      setScopeStatus(kScopeWaiting);
     } else {
       paused = true;
       $('.pause-button').html('Resume plotting');
-      $('#scopeStatus').removeClass('scope-status-triggered').addClass('scope-status-waiting').html('paused');
+      setScopeStatus(kScopePaused);
     }
     return;
   } else if (key === 'scopeOneShot') {
@@ -1461,19 +1540,18 @@ controlView.on('settings-event', function (key, value) {
       paused = false;
       $('#pauseButton').html('pause');
     }
-    $('#scopeStatus').removeClass('scope-status-triggered').addClass('scope-status-waiting').html('waiting (one-shot)');
+    setScopeStatus(kScopeWaitingOneShot);
+  } else if (key === 'darkMode') {
+    toggleDarkMode();
+    return; // do not send via websocket
+  } else if (key === 'showLabels') {
+    tabSettings.setKey('showLabels', !tabSettings.getKey('showLabels'));
+    return; // do not send via websocket
   }
   if (value === undefined) return;
   var obj = {};
   obj[key] = value;
-  var out;
-  try {
-    out = JSON.stringify(obj);
-  } catch (e) {
-    console.log('error creating settings JSON', e);
-    return;
-  }
-  if (ws.readyState === 1) ws.send(out);
+  sendToWs(obj);
   settings.setKey(key, value);
 });
 
@@ -1517,18 +1595,6 @@ channelView.on('channelConfig', function (channelConfig) {
   legend.update(channelConfig);
 });
 
-sliderView.on('slider-value', function (slider, value) {
-  var obj = { event: "slider", slider: slider, value: value };
-  var out;
-  try {
-    out = JSON.stringify(obj);
-  } catch (e) {
-    console.log('could not stringify slider json:', e);
-    return;
-  }
-  if (ws.readyState === 1) ws.send(out);
-});
-
 belaSocket.on('cpu-usage', CPU);
 
 // model events
@@ -1536,14 +1602,7 @@ settings.on('set', function (data, changedKeys) {
   if (changedKeys.indexOf('frameWidth') !== -1) {
     var xTimeBase = Math.max(Math.floor(1000 * (data.frameWidth / 8) / data.sampleRate), 1);
     settings.setKey('xTimeBase', xTimeBase);
-    var out;
-    try {
-      out = JSON.stringify({ frameWidth: data.frameWidth });
-    } catch (e) {
-      console.log('unable to stringify framewidth', e);
-      return;
-    }
-    if (ws.readyState === 1) ws.send(out);
+    sendToWs({ frameWidth: data.frameWidth });
   } else {
     worker.postMessage({
       event: 'settings',
@@ -1643,34 +1702,64 @@ function CPU(data) {
 // plotting
 {
   var plotLoop = function plotLoop() {
-    requestAnimationFrame(plotLoop);
-    if (plot) {
-      plot = false;
-      ctx.clear();
-      var minY = 0;
-      var maxY = renderer.height;
-      for (var i = 0; i < numChannels; i++) {
-        if (!channelConfig[i].enabled) continue;
-        ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, 1);
-        var iLength = i * length;
-        var constrain = function constrain(v, min, max) {
-          if (v < min) return min;
-          if (v > max) return max;
-          return v;
-        };
-        var curr = constrain(frame[iLength], minY, maxY);
-        var next = constrain(frame[iLength + 1], minY, maxY);
-        ctx.moveTo(0, curr + xOff * (next - curr));
-        for (var j = 1; j - xOff < length; j++) {
-          var _curr = constrain(frame[j + iLength], minY, maxY);
-          ctx.lineTo(j - xOff, _curr);
+    if (!plot) {
+      return;
+    }
+    plot = false;
+    var start = void 0;
+    if (benchmarkDrawing) start = performance.now();
+    ctx.clear();
+    var minY = 0;
+    var maxY = renderer.height;
+    for (var i = 0; i < numChannels; i++) {
+      if (!channelConfig[i].enabled) continue;
+      ctx.lineStyle({
+        width: channelConfig[i].lineWeight,
+        color: channelConfig[i].color,
+        alpha: 1,
+        native: false // setting this to true may reduce CPU usage but only allows width: 1
+      });
+      var iLength = i * length;
+      var constrain = function constrain(v, min, max) {
+        if (v < min) return min;
+        if (v > max) return max;
+        return v;
+      };
+      var curr = constrain(frame[iLength], minY, maxY);
+      var next = constrain(frame[iLength + 1], minY, maxY);
+      ctx.moveTo(0, curr + xOff * (next - curr));
+      var lastAlpha = 1;
+      for (var j = 1; j - xOff < length; j++) {
+        var _curr = constrain(frame[j + iLength], minY, maxY);
+        // when drawing incrementally, alpha will be 1 when close to the most
+        // recent and then progressively fade out for older values
+        if (oldDataSeparator >= 0) {
+          var dist = (length + oldDataSeparator - j - 1) % length;
+          var alpha = dist < length / 2 ? 1 : 1 - (dist - length / 2) / (length / 2);
+          // throttle lineStyle() calls as they are CPU-heavy
+          if (Math.abs(alpha - lastAlpha) > 0.1 || lastAlpha != 1 && alpha == 1) {
+            lastAlpha = alpha;
+            ctx.lineStyle(channelConfig[i].lineWeight, channelConfig[i].color, alpha);
+          }
         }
+        ctx.lineTo(j - xOff, _curr);
       }
-      renderer.render(stage);
-      triggerStatus();
-    } /*else {
-      console.log('not plotting');
-      }*/
+    }
+    renderer.render(stage);
+    triggerStatus();
+    if (benchmarkDrawing) {
+      var stop = performance.now();
+      var dur = stop - start;
+      plotRunsSum += dur;
+      plotRunsIdx++;
+      if (plotRunsIdx >= plotRuns) {
+        var perc = plotRunsSum / (stop - plotRunsStart) * 100;
+        console.log("sum: " + plotRunsSum.toFixed(2) + ", avg: ", +perc.toFixed(2) + "%, avg fps: ", plotRuns / ((stop - plotRunsStart) / 1000));
+        plotRunsSum = 0;
+        plotRunsIdx = 0;
+        plotRunsStart = stop;
+      }
+    }
   };
 
   var triggerStatus = function triggerStatus() {
@@ -1680,13 +1769,13 @@ function CPU(data) {
     if (oneShot) {
       oneShot = false;
       paused = true;
-      $('.pause-button').html('resume');
-      scopeStatus.removeClass('scope-status-triggered').addClass('scope-status-waiting').html('paused');
+      $('.pause-button').html('Resume plotting');
+      setScopeStatus(kScopePaused);
     } else {
-      scopeStatus.removeClass('scope-status-waiting').addClass('scope-status-triggered').html('triggered');
+      setScopeStatus(kScopeTriggered);
       if (triggerTimeout) clearTimeout(triggerTimeout);
       triggerTimeout = setTimeout(function () {
-        if (!oneShot && !paused) scopeStatus.removeClass('scope-status-triggered').addClass('scope-status-waiting').html('waiting');
+        if (!oneShot && !paused) setScopeStatus(kScopeWaiting);
       }, 1000);
 
       if (inactiveTimeout) clearTimeout(inactiveTimeout);
@@ -1737,33 +1826,30 @@ function CPU(data) {
   var frame = void 0,
       length = void 0,
       plot = false;
+  var oldDataSeparator = -1;
 
   worker.onmessage = function (e) {
-    frame = e.data;
+    oldDataSeparator = e.data.oldDataSeparator;
+    frame = e.data.outArray;
     length = Math.floor(frame.length / numChannels);
     // if scope is paused, don't set the plot flag
     plot = !paused;
+    if (plot) requestAnimationFrame(plotLoop);
 
     // interpolate the trigger sample to get the sub-pixel x-offset
     if (settings.getKey('plotMode') == 0) {
-      //    if (upSampling == 1){
       var one = Math.abs(frame[Math.floor(triggerChannel * length + length / 2) + xOffset - 1] + height / 2 * ((channelConfig[triggerChannel].yOffset + triggerLevel) / channelConfig[triggerChannel].yAmplitude - 1));
       var two = Math.abs(frame[Math.floor(triggerChannel * length + length / 2) + xOffset] + height / 2 * ((channelConfig[triggerChannel].yOffset + triggerLevel) / channelConfig[triggerChannel].yAmplitude - 1));
       xOff = one / (one + two) - 1.5;
-      /*    } else {
-            for (var i=0; i<=(upSampling*2); i++){
-              let one = frame[Math.floor(triggerChannel*length+length/2)+xOffset*upSampling-i] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1);
-              let two = frame[Math.floor(triggerChannel*length+length/2)+xOffset*upSampling+i] + (height/2) * ((channelConfig[triggerChannel].yOffset + triggerLevel)/channelConfig[triggerChannel].yAmplitude - 1);
-              if ((one > triggerLevel && two < triggerLevel) || (one < triggerLevel && two > triggerLevel)){
-                xOff = i*(Math.abs(one)/(Math.abs(one)+Math.abs(two))-1);
-                break;
-              }
-            }
-          }
-          console.log(xOff);
-      */if (isNaN(xOff)) xOff = 0;
+      if (isNaN(xOff)) xOff = 0;
     }
   };
+
+  var benchmarkDrawing = false;
+  var plotRuns = 50;
+  var plotRunsSum = 0;
+  var plotRunsStart = 0;
+  var plotRunsIdx = 0;
 
   plotLoop();
 
@@ -1772,7 +1858,6 @@ function CPU(data) {
   var inactiveTimeout = setTimeout(function () {
     if (!oneShot && !paused) inactiveOverlay.addClass('inactive-overlay-visible');
   }, 5000);
-  var scopeStatus = $('#scopeStatus');
   var inactiveOverlay = $('#inactive-overlay');
 
 
@@ -1818,10 +1903,9 @@ function CPU(data) {
   });
 }
 
-settings.setData((_settings$setData = {
+settings.setData({
   numChannels: 2,
   sampleRate: 44100,
-  numSliders: 0,
   frameWidth: 1280,
   plotMode: 0,
   triggerMode: 0,
@@ -1829,14 +1913,16 @@ settings.setData((_settings$setData = {
   triggerDir: 0,
   triggerLevel: 0,
   xOffset: 0,
+  xAxisBehaviour: 0,
   upSampling: 1,
   downSampling: 1,
   FFTLength: 1024,
   FFTXAxis: 0,
   FFTYAxis: 0,
-  holdOff: 0
-}, _defineProperty(_settings$setData, 'numSliders', 0), _defineProperty(_settings$setData, 'interpolation', 0), _settings$setData));
+  holdOff: 0,
+  interpolation: 0
+});
 
-},{"./BackgroundView":2,"./ChannelView":3,"./ControlView":4,"./Model":5,"./SliderView":6}]},{},[8])
+},{"./BackgroundView":2,"./ChannelView":3,"./ControlView":4,"./Model":5}]},{},[7])
 
 //# sourceMappingURL=bundle.js.map
