@@ -18,7 +18,8 @@ struct AudioCodecParams {
 	unsigned int startingSlot; // what slot in the TDM frame to place the first channel in
 	unsigned int bitDelay; // additional offset in the TDM frame (in bits)
 	double mclk; // frequency of the master clock passed to the codec
-	double samplingRate; // audio sampling rate
+	double samplingRate; // audio sampling rate (reference)
+	double samplingRatePrescaler; // NADC & NDAC sr prescaler (applied to both ADC & DAC )
 	bool dualRate; // whether to run at single or double sampling rate
 	TdmMode tdmMode; // what TDM mode to use
 	ClockSource bclk; // who generates the bit clock

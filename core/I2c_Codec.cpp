@@ -25,7 +25,7 @@ constexpr AudioCodecParams::ClockSource kClockSourceMcasp = AudioCodecParams::kC
 constexpr AudioCodecParams::ClockSource kClockSourceCodec = AudioCodecParams::kClockSourceCodec;
 constexpr AudioCodecParams::ClockSource kClockSourceExternal = AudioCodecParams::kClockSourceExternal;
 
-I2c_Codec::I2c_Codec(int i2cBus, int i2cAddress, CodecType type, bool isVerbose /*= false*/)
+I2c_Codec::I2c_Codec(int i2cBus, int i2cAddress, CodecType type, float samplingRate, float samplingRatePrescaler, bool isVerbose /*= false*/)
 : codecType(type)
 	, running(false)
 	, verbose(isVerbose)
@@ -42,7 +42,8 @@ I2c_Codec::I2c_Codec(int i2cBus, int i2cAddress, CodecType type, bool isVerbose 
 	params.bclk = kClockSourceCodec;
 	params.wclk = kClockSourceCodec;
 	params.mclk = mcaspConfig.getValidAhclk(24000000);
-	params.samplingRate = 44100;
+	params.samplingRate = samplingRate;        //sampling rate (ref)
+  	params.samplingRatePrescaler = samplingRatePrescaler; //sr prescaler - Range: [1,6] in steps of 0.5
 	initI2C_RW(i2cBus, i2cAddress, -1);
 }
 
@@ -112,6 +113,17 @@ int I2c_Codec::startAudio(int shouldBeReady)
 
 	if(InitMode_noInit != mode) {
 		// see datasehet for TLV320AIC3104 from page 44
+		if(params.samplingRatePrescaler < 1.0 || params.samplingRatePrescaler > 6.0)
+		{
+			fprintf(stderr, "I2c_Codec: Sampling rate prescaler out of range.\n");
+			return 1;
+		}
+
+		uint8_t prescalerReg = 0x0F & ( (int)(params.samplingRatePrescaler * 2 - 2) );
+		prescalerReg = prescalerReg | ( prescalerReg << 4); // Copy value to both ADC & DAC
+		if(writeRegister(0x02,prescalerReg))
+			return 1;
+
 		if(pllEnabled) {
 			if(setAudioSamplingRate(params.samplingRate))
 				return 1;
@@ -1164,7 +1176,7 @@ unsigned int I2c_Codec::getNumOuts(){
 }
 
 float I2c_Codec::getSampleRate() {
-	return params.samplingRate;
+	return params.samplingRate / params.samplingRatePrescaler;
 }
 
 int I2c_Codec::setParameters(const AudioCodecParams& codecParams)

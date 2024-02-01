@@ -67,7 +67,7 @@ public:
 
 	void setVerbose(bool isVerbose);
 
-	I2c_Codec(int i2cBus, int I2cAddress, CodecType type, bool verbose = false);
+	I2c_Codec(int i2cBus, int I2cAddress, CodecType type, float samplingRate = 44100.0, float samplingRatePrescaler = 1.0, bool verbose = false);
 	~I2c_Codec();
 
 	virtual McaspConfig& getMcaspConfig();

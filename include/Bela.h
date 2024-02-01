@@ -785,7 +785,7 @@ BelaHw Bela_detectHw(BelaHwDetectMode mode);
  *
  * \return 0 on success, or nonzero if an error occurred.
  */
-int Bela_initAudio(BelaInitSettings *settings, void *userData);
+int Bela_initAudio(BelaInitSettings *settings, void *userData, float samplingRate, float samplingRatePrescaler);
 
 /**
  * \brief Begin processing audio and sensor data.
