@@ -1014,7 +1014,7 @@ static bool pdMultiplexerActive = false;
 #ifdef PD_THREADED_IO
 void fdLoop(void* arg){
 	while(!Bela_stopRequested()){
-		sys_doio()
+		sys_doio();
 		usleep(3000);
 	}
 }
